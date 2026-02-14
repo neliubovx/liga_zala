@@ -6,7 +6,9 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:liga_zala/city/city_list_page.dart';
+import 'package:liga_zala/data/cities_halls_cache.dart';
 import 'package:liga_zala/hall/hall_list_page.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 void main() {
@@ -16,6 +18,7 @@ void main() {
 
   setUpAll(() async {
     httpClient = _PlannedHttpClient();
+    SharedPreferences.setMockInitialValues({});
 
     await Supabase.initialize(
       url: 'http://localhost:54321',
@@ -31,6 +34,10 @@ void main() {
     );
   });
 
+  setUp(() async {
+    await CitiesHallsCache.instance.clearAll();
+  });
+
   tearDown(() {
     httpClient.clear();
   });
@@ -44,6 +51,8 @@ void main() {
   ) async {
     httpClient.setPlan('GET', '/rest/v1/cities', [
       _ResponseStep.error(const SocketException('Failed host lookup')),
+      _ResponseStep.error(const SocketException('Failed host lookup')),
+      _ResponseStep.error(const SocketException('Failed host lookup')),
       _ResponseStep.json([
         {'id': 'city-1', 'name': 'Красноярск'},
       ], delay: const Duration(milliseconds: 120)),
@@ -53,7 +62,7 @@ void main() {
 
     expect(find.byType(CircularProgressIndicator), findsOneWidget);
 
-    await tester.pumpAndSettle();
+    await tester.pump(const Duration(seconds: 2));
 
     expect(find.textContaining('Не удалось загрузить города'), findsOneWidget);
     expect(find.text('Повторить'), findsOneWidget);
@@ -63,16 +72,43 @@ void main() {
 
     expect(find.byType(CircularProgressIndicator), findsOneWidget);
 
-    await tester.pumpAndSettle();
+    await tester.pump(const Duration(seconds: 1));
 
-    expect(httpClient.callCount('GET', '/rest/v1/cities'), 2);
+    expect(httpClient.callCount('GET', '/rest/v1/cities'), 4);
     expect(find.text('Красноярск'), findsOneWidget);
+  });
+
+  testWidgets('CityListPage keeps cached data and shows offline banner', (
+    WidgetTester tester,
+  ) async {
+    await CitiesHallsCache.instance.writeCities([
+      {'id': 'city-1', 'name': 'Красноярск'},
+    ]);
+
+    httpClient.setPlan('GET', '/rest/v1/cities', [
+      _ResponseStep.error(const SocketException('Failed host lookup')),
+      _ResponseStep.error(const SocketException('Failed host lookup')),
+      _ResponseStep.error(const SocketException('Failed host lookup')),
+    ]);
+
+    await tester.pumpWidget(const MaterialApp(home: CityListPage()));
+    await tester.pump(const Duration(milliseconds: 120));
+
+    expect(find.text('Красноярск'), findsOneWidget);
+
+    await tester.pump(const Duration(seconds: 2));
+
+    expect(find.text('Нет сети. Показаны сохраненные данные.'), findsOneWidget);
+    expect(find.text('Обновить'), findsOneWidget);
+    expect(httpClient.callCount('GET', '/rest/v1/cities'), 3);
   });
 
   testWidgets('HallListPage handles network failure and retry', (
     WidgetTester tester,
   ) async {
     httpClient.setPlan('GET', '/rest/v1/halls', [
+      _ResponseStep.error(const SocketException('Failed host lookup')),
+      _ResponseStep.error(const SocketException('Failed host lookup')),
       _ResponseStep.error(const SocketException('Failed host lookup')),
       _ResponseStep.json([
         {'id': 'hall-1', 'city_id': 'city-1', 'name': 'Арена Север'},
@@ -87,7 +123,7 @@ void main() {
 
     expect(find.byType(CircularProgressIndicator), findsOneWidget);
 
-    await tester.pumpAndSettle();
+    await tester.pump(const Duration(seconds: 2));
 
     expect(find.textContaining('Не удалось загрузить залы'), findsOneWidget);
     expect(find.text('Повторить'), findsOneWidget);
@@ -97,11 +133,40 @@ void main() {
 
     expect(find.byType(CircularProgressIndicator), findsOneWidget);
 
-    await tester.pumpAndSettle();
+    await tester.pump(const Duration(seconds: 1));
 
-    expect(httpClient.callCount('GET', '/rest/v1/halls'), 2);
+    expect(httpClient.callCount('GET', '/rest/v1/halls'), 4);
     expect(find.text('Арена Север'), findsOneWidget);
     expect(find.textContaining('owner_id'), findsNothing);
+  });
+
+  testWidgets('HallListPage keeps cached data and shows offline banner', (
+    WidgetTester tester,
+  ) async {
+    await CitiesHallsCache.instance.writeHalls('city-1', [
+      {'id': 'hall-1', 'city_id': 'city-1', 'name': 'Арена Север'},
+    ]);
+
+    httpClient.setPlan('GET', '/rest/v1/halls', [
+      _ResponseStep.error(const SocketException('Failed host lookup')),
+      _ResponseStep.error(const SocketException('Failed host lookup')),
+      _ResponseStep.error(const SocketException('Failed host lookup')),
+    ]);
+
+    await tester.pumpWidget(
+      const MaterialApp(
+        home: HallListPage(cityId: 'city-1', cityName: 'Красноярск'),
+      ),
+    );
+    await tester.pump(const Duration(milliseconds: 120));
+
+    expect(find.text('Арена Север'), findsOneWidget);
+
+    await tester.pump(const Duration(seconds: 2));
+
+    expect(find.text('Нет сети. Показаны сохраненные данные.'), findsOneWidget);
+    expect(find.text('Обновить'), findsOneWidget);
+    expect(httpClient.callCount('GET', '/rest/v1/halls'), 3);
   });
 }
 

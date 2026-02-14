@@ -4,7 +4,12 @@ import '../../tournaments/ui/create_tournament_page.dart';
 import '../../tournaments/ui/tournaments_history_page.dart';
 
 class HallTournamentsPage extends StatelessWidget {
-  const HallTournamentsPage({super.key});
+  const HallTournamentsPage({
+    super.key,
+    required this.hallId,
+  });
+
+  final String hallId;
 
   @override
   Widget build(BuildContext context) {
@@ -20,7 +25,7 @@ class HallTournamentsPage extends StatelessWidget {
               Navigator.push(
                 context,
                 MaterialPageRoute(
-                  builder: (_) => const CreateTournamentPage(),
+                  builder: (_) => CreateTournamentPage(hallId: hallId),
                 ),
               );
             },
@@ -38,7 +43,7 @@ class HallTournamentsPage extends StatelessWidget {
               Navigator.push(
                 context,
                 MaterialPageRoute(
-                  builder: (_) => const TournamentHistoryPage(),
+                  builder: (_) => TournamentsHistoryPage(hallId: hallId),
                 ),
               );
             },

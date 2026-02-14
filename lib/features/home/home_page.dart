@@ -26,7 +26,7 @@ class _HomePageState extends State<HomePage> {
     Navigator.pushAndRemoveUntil(
       context,
       MaterialPageRoute(
-        builder: (_) => const CityPage(),
+        builder: (_) => CityPage(),
       ),
       (_) => false,
     );
@@ -35,11 +35,20 @@ class _HomePageState extends State<HomePage> {
   List<Widget> get _pages {
     final hallId = AppState.instance.currentHallId;
 
+    if (hallId == null) {
+      const chooseHall = Center(child: Text('Сначала выберите зал'));
+      return const [
+        DashboardPage(),
+        PlayersTab(),
+        chooseHall,
+        chooseHall,
+      ];
+    }
+
     return [
       const DashboardPage(),
       const PlayersTab(),
-      const MatchesPage(),
-      // Если hallId пока null — RatingPage сам должен это обработать
+      MatchesPage(hallId: hallId),
       RatingPage(hallId: hallId),
     ];
   }

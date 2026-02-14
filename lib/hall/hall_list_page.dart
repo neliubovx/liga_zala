@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
@@ -40,13 +42,14 @@ class _HallListPageState extends State<HallListPage> {
     try {
       final res = await supabase
           .from('halls')
-          .select('id, city_id, name, created_at')
+          .select('id, city_id, name')
           .eq('city_id', widget.cityId)
-          .order('created_at', ascending: false);
+          .order('name', ascending: true)
+          .timeout(const Duration(seconds: 12));
 
       _halls = (res as List).cast<Map<String, dynamic>>();
     } catch (e) {
-      _error = e.toString();
+      _error = _friendlyLoadError(e);
       _halls = const [];
     }
 
@@ -85,16 +88,19 @@ class _HallListPageState extends State<HallListPage> {
     if (name == null || name.isEmpty) return;
 
     try {
-      await supabase.from('halls').insert({
-        'city_id': widget.cityId,
-        'name': name,
-      });
+      await supabase
+          .from('halls')
+          .insert({
+            'city_id': widget.cityId,
+            'name': name,
+          })
+          .timeout(const Duration(seconds: 12));
 
       await _load();
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Не удалось создать зал: $e')),
+        const SnackBar(content: Text('Не удалось создать зал. Проверь интернет/VPN и попробуй снова.')),
       );
     }
   }
@@ -125,7 +131,7 @@ class _HallListPageState extends State<HallListPage> {
                     padding: const EdgeInsets.all(16),
                     children: [
                       Text(
-                        'Ошибка загрузки залов:\n$_error',
+                        _error!,
                         style: const TextStyle(color: Colors.red),
                       ),
                       const SizedBox(height: 12),
@@ -183,5 +189,27 @@ class _HallListPageState extends State<HallListPage> {
                       ),
       ),
     );
+  }
+
+  String _friendlyLoadError(Object error) {
+    final text = error.toString().toLowerCase();
+
+    if (text.contains('owner_id')) {
+      return 'Не удалось загрузить залы: поле owner_id отсутствует в таблице halls. '
+          'Проверь схему БД и нажми "Повторить".';
+    }
+
+    final isNetworkIssue = text.contains('failed host lookup') ||
+        text.contains('socketexception') ||
+        text.contains('network') ||
+        text.contains('dns') ||
+        text.contains('timed out') ||
+        text.contains('timeout');
+
+    if (isNetworkIssue) {
+      return 'Не удалось загрузить залы. Проверь интернет/VPN и нажми "Повторить".';
+    }
+
+    return 'Не удалось загрузить залы. Нажми "Повторить".';
   }
 }

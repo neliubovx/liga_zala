@@ -1,0 +1,190 @@
+import 'dart:async';
+import 'dart:convert';
+import 'dart:io';
+
+import 'package:flutter/material.dart';
+import 'package:flutter_test/flutter_test.dart';
+import 'package:http/http.dart' as http;
+import 'package:liga_zala/city/city_list_page.dart';
+import 'package:liga_zala/hall/hall_list_page.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
+
+void main() {
+  TestWidgetsFlutterBinding.ensureInitialized();
+
+  late _PlannedHttpClient httpClient;
+
+  setUpAll(() async {
+    httpClient = _PlannedHttpClient();
+
+    await Supabase.initialize(
+      url: 'http://localhost:54321',
+      anonKey: 'test-anon-key',
+      httpClient: httpClient,
+      debug: false,
+      authOptions: FlutterAuthClientOptions(
+        autoRefreshToken: false,
+        detectSessionInUri: false,
+        localStorage: const EmptyLocalStorage(),
+        pkceAsyncStorage: _MemoryAsyncStorage(),
+      ),
+    );
+  });
+
+  tearDown(() {
+    httpClient.clear();
+  });
+
+  tearDownAll(() async {
+    await Supabase.instance.dispose();
+  });
+
+  testWidgets('CityListPage handles error and reloads after retry', (
+    WidgetTester tester,
+  ) async {
+    httpClient.setPlan('GET', '/rest/v1/cities', [
+      _ResponseStep.error(const SocketException('Failed host lookup')),
+      _ResponseStep.json([
+        {'id': 'city-1', 'name': 'Красноярск'},
+      ], delay: const Duration(milliseconds: 120)),
+    ]);
+
+    await tester.pumpWidget(const MaterialApp(home: CityListPage()));
+
+    expect(find.byType(CircularProgressIndicator), findsOneWidget);
+
+    await tester.pumpAndSettle();
+
+    expect(find.textContaining('Не удалось загрузить города'), findsOneWidget);
+    expect(find.text('Повторить'), findsOneWidget);
+
+    await tester.tap(find.text('Повторить'));
+    await tester.pump();
+
+    expect(find.byType(CircularProgressIndicator), findsOneWidget);
+
+    await tester.pumpAndSettle();
+
+    expect(httpClient.callCount('GET', '/rest/v1/cities'), 2);
+    expect(find.text('Красноярск'), findsOneWidget);
+  });
+
+  testWidgets('HallListPage handles network failure and retry', (
+    WidgetTester tester,
+  ) async {
+    httpClient.setPlan('GET', '/rest/v1/halls', [
+      _ResponseStep.error(const SocketException('Failed host lookup')),
+      _ResponseStep.json([
+        {'id': 'hall-1', 'city_id': 'city-1', 'name': 'Арена Север'},
+      ], delay: const Duration(milliseconds: 120)),
+    ]);
+
+    await tester.pumpWidget(
+      const MaterialApp(
+        home: HallListPage(cityId: 'city-1', cityName: 'Красноярск'),
+      ),
+    );
+
+    expect(find.byType(CircularProgressIndicator), findsOneWidget);
+
+    await tester.pumpAndSettle();
+
+    expect(find.textContaining('Не удалось загрузить залы'), findsOneWidget);
+    expect(find.text('Повторить'), findsOneWidget);
+
+    await tester.tap(find.text('Повторить'));
+    await tester.pump();
+
+    expect(find.byType(CircularProgressIndicator), findsOneWidget);
+
+    await tester.pumpAndSettle();
+
+    expect(httpClient.callCount('GET', '/rest/v1/halls'), 2);
+    expect(find.text('Арена Север'), findsOneWidget);
+    expect(find.textContaining('owner_id'), findsNothing);
+  });
+}
+
+class _PlannedHttpClient extends http.BaseClient {
+  final Map<String, List<_ResponseStep>> _plans = {};
+  final List<String> _requestLog = [];
+
+  void setPlan(String method, String path, List<_ResponseStep> steps) {
+    _plans['$method $path'] = List<_ResponseStep>.from(steps);
+  }
+
+  int callCount(String method, String path) {
+    final key = '${method.toUpperCase()} $path';
+    return _requestLog.where((entry) => entry == key).length;
+  }
+
+  void clear() {
+    _plans.clear();
+    _requestLog.clear();
+  }
+
+  @override
+  Future<http.StreamedResponse> send(http.BaseRequest request) async {
+    final key = '${request.method.toUpperCase()} ${request.url.path}';
+    _requestLog.add(key);
+    final queue = _plans[key];
+
+    if (queue == null || queue.isEmpty) {
+      return _jsonResponse({'ok': true}, request: request);
+    }
+
+    final step = queue.removeAt(0);
+    if (step.delay != null) {
+      await Future<void>.delayed(step.delay!);
+    }
+
+    if (step.error != null) {
+      throw step.error!;
+    }
+
+    return _jsonResponse(step.body, request: request);
+  }
+
+  http.StreamedResponse _jsonResponse(
+    Object? body, {
+    int statusCode = 200,
+    required http.BaseRequest request,
+  }) {
+    final bytes = utf8.encode(jsonEncode(body));
+    return http.StreamedResponse(
+      Stream<List<int>>.value(bytes),
+      statusCode,
+      request: request,
+      headers: const {'content-type': 'application/json; charset=utf-8'},
+    );
+  }
+}
+
+class _ResponseStep {
+  final Object? body;
+  final Object? error;
+  final Duration? delay;
+
+  const _ResponseStep.json(this.body, {this.delay}) : error = null;
+
+  const _ResponseStep.error(this.error) : body = null, delay = null;
+}
+
+class _MemoryAsyncStorage extends GotrueAsyncStorage {
+  final Map<String, String> _values = {};
+
+  @override
+  Future<String?> getItem({required String key}) async {
+    return _values[key];
+  }
+
+  @override
+  Future<void> removeItem({required String key}) async {
+    _values.remove(key);
+  }
+
+  @override
+  Future<void> setItem({required String key, required String value}) async {
+    _values[key] = value;
+  }
+}

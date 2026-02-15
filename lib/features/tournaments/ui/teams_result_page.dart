@@ -64,15 +64,15 @@ class _TeamsResultPageState extends State<TeamsResultPage> {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
       decoration: BoxDecoration(
-        color: Colors.grey.withOpacity(0.12),
+        color: Colors.grey.withValues(alpha: 0.12),
         borderRadius: BorderRadius.circular(999),
-        border: Border.all(color: Colors.grey.withOpacity(0.25)),
+        border: Border.all(color: Colors.grey.withValues(alpha: 0.25)),
       ),
       child: Text(
         'Формат: $_methodLabel',
-        style: Theme.of(context).textTheme.bodySmall?.copyWith(
-              fontWeight: FontWeight.w600,
-            ),
+        style: Theme.of(
+          context,
+        ).textTheme.bodySmall?.copyWith(fontWeight: FontWeight.w600),
       ),
     );
   }
@@ -202,16 +202,37 @@ class _TeamsResultPageState extends State<TeamsResultPage> {
 
     final rows = await supabase
         .from('players')
-        .select('id, app_id')
+        .select('id, app_id, hall_id')
         .inFilter('app_id', appIds.toList());
 
     final list = (rows as List).cast<Map<String, dynamic>>();
     final map = <String, String>{};
+    final priorityByAppId = <String, int>{};
 
     for (final r in list) {
       final uuid = r['id'].toString();
       final appId = (r['app_id'] ?? '').toString();
-      if (appId.isNotEmpty) map[appId] = uuid;
+      if (appId.isEmpty) continue;
+
+      final hallId = r['hall_id']?.toString();
+      final isHallMatch = hallId == widget.hallId;
+      final isLegacyWithoutHall = hallId == null || hallId.isEmpty;
+
+      if (!isHallMatch && !isLegacyWithoutHall) continue;
+
+      final priority = isHallMatch ? 2 : 1;
+      final currentPriority = priorityByAppId[appId] ?? 0;
+      if (priority >= currentPriority) {
+        map[appId] = uuid;
+        priorityByAppId[appId] = priority;
+      }
+
+      if (isLegacyWithoutHall) {
+        await supabase
+            .from('players')
+            .update({'hall_id': widget.hallId})
+            .eq('id', uuid);
+      }
     }
     return map;
   }
@@ -221,16 +242,20 @@ class _TeamsResultPageState extends State<TeamsResultPage> {
     final appIds = allPlayers.map((p) => p.id).toSet();
 
     final existing = await _fetchAppIdToUuid(appIds);
-    final missing =
-        allPlayers.where((p) => !existing.containsKey(p.id)).toList();
+    final missing = allPlayers
+        .where((p) => !existing.containsKey(p.id))
+        .toList();
 
     if (missing.isNotEmpty) {
       final payload = missing
-          .map((p) => {
-                'app_id': p.id,
-                'name': p.name,
-                'rating': p.rating,
-              })
+          .map(
+            (p) => {
+              'app_id': p.id,
+              'name': p.name,
+              'rating': p.rating,
+              'hall_id': widget.hallId,
+            },
+          )
           .toList();
 
       await supabase.from('players').insert(payload);
@@ -302,11 +327,10 @@ class _TeamsResultPageState extends State<TeamsResultPage> {
           if (playerUuid == null) continue;
 
           tpRows.add({
-  'team_id': teamId,
-  'player_id': playerUuid,
-  'tournament_id': tournamentId, // ✅ ОБЯЗАТЕЛЬНО теперь
-});
-
+            'team_id': teamId,
+            'player_id': playerUuid,
+            'tournament_id': tournamentId, // ✅ ОБЯЗАТЕЛЬНО теперь
+          });
         }
       }
       if (tpRows.isNotEmpty) {
@@ -345,9 +369,9 @@ class _TeamsResultPageState extends State<TeamsResultPage> {
       await _openTournament(tournamentId);
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Не удалось создать турнир: $e')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('Не удалось создать турнир: $e')));
     } finally {
       if (mounted) setState(() => _creating = false);
     }
@@ -406,53 +430,50 @@ class _TeamsResultPageState extends State<TeamsResultPage> {
                   ),
                 )
               : hasTournament
-                  ? Column(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        SizedBox(
-                          height: 48,
-                          width: double.infinity,
-                          child: ElevatedButton(
-                            onPressed: _creating
-                                ? null
-                                : () => _openTournament(_tournamentId!),
-                            child: const Text('Вернуться в турнир'),
-                          ),
-                        ),
-                        const SizedBox(height: 10),
-                        SizedBox(
-                          height: 48,
-                          width: double.infinity,
-                          child: OutlinedButton(
-                            onPressed: _creating ? null : _startNewTournament,
-                            child: const Text('Начать новый турнир'),
-                          ),
-                        ),
-                      ],
-                    )
-                  : SizedBox(
+              ? Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    SizedBox(
                       height: 48,
                       width: double.infinity,
                       child: ElevatedButton(
-                        onPressed: _creating ? null : _createTournament,
-                        child: _creating
-                            ? const SizedBox(
-                                height: 18,
-                                width: 18,
-                                child: CircularProgressIndicator(strokeWidth: 2),
-                              )
-                            : const Text('Сформировать турнир'),
+                        onPressed: _creating
+                            ? null
+                            : () => _openTournament(_tournamentId!),
+                        child: const Text('Вернуться в турнир'),
                       ),
                     ),
+                    const SizedBox(height: 10),
+                    SizedBox(
+                      height: 48,
+                      width: double.infinity,
+                      child: OutlinedButton(
+                        onPressed: _creating ? null : _startNewTournament,
+                        child: const Text('Начать новый турнир'),
+                      ),
+                    ),
+                  ],
+                )
+              : SizedBox(
+                  height: 48,
+                  width: double.infinity,
+                  child: ElevatedButton(
+                    onPressed: _creating ? null : _createTournament,
+                    child: _creating
+                        ? const SizedBox(
+                            height: 18,
+                            width: 18,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          )
+                        : const Text('Сформировать турнир'),
+                  ),
+                ),
         ),
       ),
       body: ListView(
         padding: const EdgeInsets.all(12),
         children: [
-          Align(
-            alignment: Alignment.centerLeft,
-            child: _methodChip(),
-          ),
+          Align(alignment: Alignment.centerLeft, child: _methodChip()),
           const SizedBox(height: 10),
 
           for (int i = 0; i < widget.teams.length; i++) ...[
@@ -493,7 +514,11 @@ class _TeamsResultPageState extends State<TeamsResultPage> {
                               ),
                             ] else
                               const Spacer(),
-                            Icon(Icons.edit, size: 16, color: Colors.grey.shade600),
+                            Icon(
+                              Icons.edit,
+                              size: 16,
+                              color: Colors.grey.shade600,
+                            ),
                           ],
                         ),
                       ),
@@ -508,43 +533,45 @@ class _TeamsResultPageState extends State<TeamsResultPage> {
                         final right = players.skip(half).toList();
 
                         Widget col(List<Player> list) => Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: list.map((p) {
-                                return Padding(
-                                  padding: const EdgeInsets.symmetric(vertical: 2),
-                                  child: _hideRating
-                                      ? Text(
-                                          p.name,
-                                          maxLines: 1,
-                                          overflow: TextOverflow.ellipsis,
-                                          style: const TextStyle(
-                                            fontSize: 12.5,
-                                            fontWeight: FontWeight.w500,
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: list.map((p) {
+                            return Padding(
+                              padding: const EdgeInsets.symmetric(vertical: 2),
+                              child: _hideRating
+                                  ? Text(
+                                      p.name,
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                      style: const TextStyle(
+                                        fontSize: 12.5,
+                                        fontWeight: FontWeight.w500,
+                                      ),
+                                    )
+                                  : Row(
+                                      children: [
+                                        Expanded(
+                                          child: Text(
+                                            p.name,
+                                            maxLines: 1,
+                                            overflow: TextOverflow.ellipsis,
+                                            style: const TextStyle(
+                                              fontSize: 12,
+                                            ),
                                           ),
-                                        )
-                                      : Row(
-                                          children: [
-                                            Expanded(
-                                              child: Text(
-                                                p.name,
-                                                maxLines: 1,
-                                                overflow: TextOverflow.ellipsis,
-                                                style: const TextStyle(fontSize: 12),
-                                              ),
-                                            ),
-                                            const SizedBox(width: 6),
-                                            Text(
-                                              '${p.rating}',
-                                              style: TextStyle(
-                                                fontSize: 11,
-                                                color: Colors.grey.shade600,
-                                              ),
-                                            ),
-                                          ],
                                         ),
-                                );
-                              }).toList(),
+                                        const SizedBox(width: 6),
+                                        Text(
+                                          '${p.rating}',
+                                          style: TextStyle(
+                                            fontSize: 11,
+                                            color: Colors.grey.shade600,
+                                          ),
+                                        ),
+                                      ],
+                                    ),
                             );
+                          }).toList(),
+                        );
 
                         return Row(
                           crossAxisAlignment: CrossAxisAlignment.start,

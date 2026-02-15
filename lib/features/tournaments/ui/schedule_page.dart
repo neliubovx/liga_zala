@@ -485,11 +485,16 @@ class _SchedulePageState extends State<SchedulePage> {
     if (!match.finished || match.events.isEmpty) return;
 
     final statsByUserId = <String, _EventStatsAccumulator>{};
+    int unresolvedPlayers = 0;
     for (final event in match.events) {
       if (event.type == MatchEventType.ownGoal) continue;
 
       if (event.type == MatchEventType.goal) {
-        final scorerId = _resolveUserId(event.playerId);
+        final scorerId = _resolveUserIdForEvent(
+          rawId: event.playerId,
+          rawName: event.playerName,
+          teamIndex: event.teamIndex,
+        );
         if (scorerId != null) {
           final scorerStats = statsByUserId.putIfAbsent(
             scorerId,
@@ -497,9 +502,15 @@ class _SchedulePageState extends State<SchedulePage> {
           );
           scorerStats.goals += 1;
           scorerStats.teamIndex = event.teamIndex;
+        } else {
+          unresolvedPlayers += 1;
         }
 
-        final assistId = _resolveUserId(event.assistPlayerId);
+        final assistId = _resolveUserIdForEvent(
+          rawId: event.assistPlayerId,
+          rawName: event.assistPlayerName,
+          teamIndex: event.teamIndex,
+        );
         if (assistId != null) {
           final assistStats = statsByUserId.putIfAbsent(
             assistId,
@@ -507,11 +518,18 @@ class _SchedulePageState extends State<SchedulePage> {
           );
           assistStats.assists += 1;
           assistStats.teamIndex = event.teamIndex;
+        } else if (event.assistPlayerId != null ||
+            event.assistPlayerName != null) {
+          unresolvedPlayers += 1;
         }
       }
 
       if (event.type == MatchEventType.assist) {
-        final assistId = _resolveUserId(event.playerId);
+        final assistId = _resolveUserIdForEvent(
+          rawId: event.playerId,
+          rawName: event.playerName,
+          teamIndex: event.teamIndex,
+        );
         if (assistId != null) {
           final assistStats = statsByUserId.putIfAbsent(
             assistId,
@@ -519,11 +537,25 @@ class _SchedulePageState extends State<SchedulePage> {
           );
           assistStats.assists += 1;
           assistStats.teamIndex = event.teamIndex;
+        } else {
+          unresolvedPlayers += 1;
         }
       }
     }
 
-    if (statsByUserId.isEmpty) return;
+    final hasPlayerEvents = match.events.any(
+      (event) =>
+          event.type == MatchEventType.goal ||
+          event.type == MatchEventType.assist,
+    );
+    if (statsByUserId.isEmpty) {
+      if (hasPlayerEvents) {
+        throw StateError(
+          'Не удалось сопоставить игроков для записи голов/пасов (unresolved: $unresolvedPlayers)',
+        );
+      }
+      return;
+    }
 
     final insertRows = <Map<String, dynamic>>[];
     final nowUtc = DateTime.now().toUtc().toIso8601String();
@@ -551,9 +583,9 @@ class _SchedulePageState extends State<SchedulePage> {
 
     final isHome = teamIndex == match.homeIndex;
     if (isHome) {
-      return match.homeScore > match.awayScore ? 'win' : 'loss';
+      return match.homeScore > match.awayScore ? 'win' : 'lose';
     }
-    return match.awayScore > match.homeScore ? 'win' : 'loss';
+    return match.awayScore > match.homeScore ? 'win' : 'lose';
   }
 
   String? _resolveUserId(String? maybeUserOrAppId) {
@@ -572,6 +604,31 @@ class _SchedulePageState extends State<SchedulePage> {
       return value;
     }
     return null;
+  }
+
+  String? _resolveUserIdForEvent({
+    required String? rawId,
+    required String? rawName,
+    required int teamIndex,
+  }) {
+    final resolvedById = _resolveUserId(rawId);
+    if (resolvedById != null) return resolvedById;
+
+    final name = rawName?.trim();
+    if (name == null || name.isEmpty) return null;
+
+    final roster = _playersForTeam(teamIndex);
+    Player? exactMatch;
+    for (final player in roster) {
+      if (player.name.trim().toLowerCase() == name.toLowerCase()) {
+        exactMatch = player;
+        break;
+      }
+    }
+    if (exactMatch == null) return null;
+
+    return _resolveUserId(exactMatch.id) ??
+        (_uuidRegex.hasMatch(exactMatch.id) ? exactMatch.id : null);
   }
 
   String _newUuidV4() {

@@ -10,7 +10,7 @@ begin;
 with inferred as (
   select
     tp.player_id,
-    min(t.hall_id) as hall_id,
+    (array_agg(distinct t.hall_id::text order by t.hall_id::text))[1]::uuid as hall_id,
     count(distinct t.hall_id) as hall_count
   from public.team_players tp
   join public.tournaments t on t.id = tp.tournament_id

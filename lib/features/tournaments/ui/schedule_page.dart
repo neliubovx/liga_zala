@@ -1,3 +1,5 @@
+import 'dart:math';
+
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
@@ -29,6 +31,7 @@ class SchedulePage extends StatefulWidget {
 
 class _SchedulePageState extends State<SchedulePage> {
   final supabase = Supabase.instance.client;
+  final Random _random = Random.secure();
   static final RegExp _uuidRegex = RegExp(
     r'^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$',
   );
@@ -523,8 +526,10 @@ class _SchedulePageState extends State<SchedulePage> {
     if (statsByUserId.isEmpty) return;
 
     final insertRows = <Map<String, dynamic>>[];
+    final nowUtc = DateTime.now().toUtc().toIso8601String();
     statsByUserId.forEach((userId, stats) {
       insertRows.add({
+        'id': _newUuidV4(),
         'hall_id': widget.hallId,
         'tournament_id': widget.tournamentId.toString(),
         'match_id': match.id,
@@ -534,6 +539,7 @@ class _SchedulePageState extends State<SchedulePage> {
         'result': _resultForTeam(match, stats.teamIndex),
         'was_captain': false,
         'was_mvp': false,
+        'created_at': nowUtc,
       });
     });
 
@@ -566,6 +572,19 @@ class _SchedulePageState extends State<SchedulePage> {
       return value;
     }
     return null;
+  }
+
+  String _newUuidV4() {
+    final bytes = List<int>.generate(16, (_) => _random.nextInt(256));
+    bytes[6] = (bytes[6] & 0x0f) | 0x40;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+
+    final hex = bytes.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
+    return '${hex.substring(0, 8)}-'
+        '${hex.substring(8, 12)}-'
+        '${hex.substring(12, 16)}-'
+        '${hex.substring(16, 20)}-'
+        '${hex.substring(20, 32)}';
   }
 
   // --------- UI helpers ----------

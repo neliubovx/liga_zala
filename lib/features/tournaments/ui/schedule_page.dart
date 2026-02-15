@@ -33,6 +33,8 @@ class _SchedulePageState extends State<SchedulePage> {
   bool _loading = true;
   bool _finishing = false;
   bool _isCompleted = false;
+  bool _statsApplied = false;
+  bool _hasStatsAppliedColumn = true;
 
   final List<MatchGame> _matches = [];
   final Map<int, String> _teamNames = {};
@@ -69,14 +71,38 @@ class _SchedulePageState extends State<SchedulePage> {
     try {
       final row = await supabase
           .from('tournaments')
-          .select('completed')
+          .select('completed, stats_applied')
           .eq('id', widget.tournamentId)
           .single();
 
       _isCompleted = (row['completed'] as bool?) ?? false;
+      _statsApplied = (row['stats_applied'] as bool?) ?? false;
+      _hasStatsAppliedColumn = true;
     } catch (e) {
-      debugPrint('❌ Ошибка загрузки completed: $e');
+      if (_isMissingStatsAppliedColumnError(e)) {
+        _hasStatsAppliedColumn = false;
+
+        try {
+          final row = await supabase
+              .from('tournaments')
+              .select('completed')
+              .eq('id', widget.tournamentId)
+              .single();
+
+          _isCompleted = (row['completed'] as bool?) ?? false;
+          _statsApplied = _isCompleted;
+        } catch (inner) {
+          debugPrint('❌ Ошибка загрузки completed: $inner');
+          _isCompleted = false;
+          _statsApplied = false;
+        }
+
+        return;
+      }
+
+      debugPrint('❌ Ошибка загрузки completed/stats_applied: $e');
       _isCompleted = false;
+      _statsApplied = false;
     }
   }
 
@@ -103,7 +129,8 @@ class _SchedulePageState extends State<SchedulePage> {
       final rows = await supabase
           .from('matches')
           .select(
-              'id, round, match_no, home_team, away_team, home_score, away_score, finished')
+            'id, round, match_no, home_team, away_team, home_score, away_score, finished',
+          )
           .eq('tournament_id', widget.tournamentId)
           .order('round', ascending: true)
           .order('match_no', ascending: true);
@@ -137,9 +164,9 @@ class _SchedulePageState extends State<SchedulePage> {
     } catch (e) {
       debugPrint('❌ Ошибка загрузки матчей: $e');
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Ошибка загрузки матчей: $e')),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('Ошибка загрузки матчей: $e')));
       }
     }
   }
@@ -148,11 +175,14 @@ class _SchedulePageState extends State<SchedulePage> {
     if (_isCompleted) return;
 
     try {
-      await supabase.from('matches').update({
-        'home_score': match.homeScore,
-        'away_score': match.awayScore,
-        'finished': match.finished,
-      }).eq('id', match.id);
+      await supabase
+          .from('matches')
+          .update({
+            'home_score': match.homeScore,
+            'away_score': match.awayScore,
+            'finished': match.finished,
+          })
+          .eq('id', match.id);
     } catch (e) {
       debugPrint('❌ Ошибка сохранения матча: $e');
       if (mounted) {
@@ -185,7 +215,8 @@ class _SchedulePageState extends State<SchedulePage> {
   // --------- UI helpers ----------
 
   static const double _badgeSize = 22;
-  static const double _nameColWidth = 84; // фикс-колонка под названия в "Составы"
+  static const double _nameColWidth =
+      84; // фикс-колонка под названия в "Составы"
   static const double _scoreColWidth = 78; // фикс-колонка под счет в матчах
 
   Widget _badge(String letter) {
@@ -278,7 +309,10 @@ class _SchedulePageState extends State<SchedulePage> {
           child: ExpansionTile(
             initiallyExpanded: _rosterExpanded,
             onExpansionChanged: (v) => setState(() => _rosterExpanded = v),
-            tilePadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 2),
+            tilePadding: const EdgeInsets.symmetric(
+              horizontal: 12,
+              vertical: 2,
+            ),
             childrenPadding: const EdgeInsets.fromLTRB(12, 0, 12, 10),
             visualDensity: const VisualDensity(horizontal: 0, vertical: -4),
             title: const Padding(
@@ -414,76 +448,164 @@ class _SchedulePageState extends State<SchedulePage> {
   }
 
   Future<void> _finishTournament() async {
-  if (_isCompleted) return;
+    if (_isCompleted || _finishing) return;
 
-  final notFinished = _matches.where((m) => !m.finished).length;
+    await _loadTournamentCompleted();
+    if (_isCompleted && _statsApplied) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('Турнир уже завершён.')));
+      return;
+    }
 
-  final ok = await showDialog<bool>(
-    context: context,
-    builder: (_) => AlertDialog(
-      title: const Text('Завершить турнир?'),
-      content: Text(
-        notFinished > 0
-            ? 'Остались не сыгранные матчи: $notFinished.\n\nВсе равно завершить?'
-            : 'Все матчи сыграны.\n\nПодтвердить завершение?',
+    if (!mounted) return;
+    final notFinished = _matches.where((m) => !m.finished).length;
+
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Text('Завершить турнир?'),
+        content: Text(
+          notFinished > 0
+              ? 'Остались не сыгранные матчи: $notFinished.\n\nВсе равно завершить?'
+              : 'Все матчи сыграны.\n\nПодтвердить завершение?',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Отмена'),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Завершить'),
+          ),
+        ],
       ),
-      actions: [
-        TextButton(
-          onPressed: () => Navigator.pop(context, false),
-          child: const Text('Отмена'),
-        ),
-        ElevatedButton(
-          onPressed: () => Navigator.pop(context, true),
-          child: const Text('Завершить'),
-        ),
-      ],
-    ),
-  );
-
-  if (ok != true) return;
-
-  setState(() => _finishing = true);
-
-  try {
-    // 1) применяем статистику турнира (3/1/0 + tournaments + wins_4/draws_4)
-    final tid = widget.tournamentId.toString(); // uuid строкой
-    await supabase.rpc('apply_tournament_stats', params: {
-      'p_tournament_id': tid,
-    });
-
-    // 2) помечаем турнир завершенным
-    await supabase
-    .from('tournaments')
-    .update({'completed': true})
-    .eq('id', widget.tournamentId);
-
-// ✅ применяем статистику по сыгранным матчам
-await supabase.rpc('apply_tournament_stats', params: {
-  'p_tournament_id': widget.tournamentId,
-});
-
-    // 3) убираем активный ключ локально
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.remove(_prefsKey);
-
-    if (!mounted) return;
-
-    setState(() => _isCompleted = true);
-
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('Турнир завершён. Статистика обновлена ✅')),
     );
 
-    Navigator.pop(context);
-  } catch (e) {
+    if (ok != true) return;
+
     if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('Не удалось завершить турнир: $e')),
-    );
-  } finally {
-    if (mounted) setState(() => _finishing = false);
+    setState(() => _finishing = true);
+
+    final tid = widget.tournamentId.toString();
+    bool lockAcquired = false;
+
+    try {
+      if (_hasStatsAppliedColumn) {
+        lockAcquired = await _tryAcquireStatsApplyLock(tid);
+      }
+
+      if (!_hasStatsAppliedColumn || lockAcquired) {
+        await supabase.rpc(
+          'apply_tournament_stats',
+          params: {'p_tournament_id': tid},
+        );
+      }
+
+      await _markTournamentCompleted(
+        tid,
+        withStatsApplied: _hasStatsAppliedColumn,
+      );
+
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.remove(_prefsKey);
+
+      if (!mounted) return;
+      setState(() {
+        _isCompleted = true;
+        if (_hasStatsAppliedColumn) {
+          _statsApplied = true;
+        }
+      });
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            lockAcquired || !_hasStatsAppliedColumn
+                ? 'Турнир завершён. Статистика обновлена ✅'
+                : 'Турнир уже был обработан ранее, повторного начисления нет ✅',
+          ),
+        ),
+      );
+
+      Navigator.pop(context);
+    } catch (e) {
+      if (_hasStatsAppliedColumn && lockAcquired) {
+        await _releaseStatsApplyLock(tid);
+      }
+
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Не удалось завершить турнир: $e')),
+      );
+    } finally {
+      if (mounted) setState(() => _finishing = false);
+    }
   }
-}
+
+  bool _isMissingStatsAppliedColumnError(Object error) {
+    final text = error.toString().toLowerCase();
+    return text.contains('stats_applied') &&
+        (text.contains('does not exist') || text.contains('could not find'));
+  }
+
+  Future<bool> _tryAcquireStatsApplyLock(String tournamentId) async {
+    try {
+      final row = await supabase
+          .from('tournaments')
+          .update({'stats_applied': true})
+          .eq('id', tournamentId)
+          .or('stats_applied.is.null,stats_applied.eq.false')
+          .select('id')
+          .maybeSingle();
+
+      return row != null;
+    } catch (e) {
+      if (_isMissingStatsAppliedColumnError(e)) {
+        _hasStatsAppliedColumn = false;
+        return true;
+      }
+      rethrow;
+    }
+  }
+
+  Future<void> _releaseStatsApplyLock(String tournamentId) async {
+    try {
+      await supabase
+          .from('tournaments')
+          .update({'stats_applied': false})
+          .eq('id', tournamentId)
+          .eq('completed', false);
+    } catch (_) {
+      // Если unlock не удался, повторное применение все равно будет блокироваться на сервере флагом.
+    }
+  }
+
+  Future<void> _markTournamentCompleted(
+    String tournamentId, {
+    required bool withStatsApplied,
+  }) async {
+    final payload = <String, dynamic>{'completed': true};
+    if (withStatsApplied) {
+      payload['stats_applied'] = true;
+    }
+
+    try {
+      await supabase.from('tournaments').update(payload).eq('id', tournamentId);
+    } catch (e) {
+      if (withStatsApplied && _isMissingStatsAppliedColumnError(e)) {
+        _hasStatsAppliedColumn = false;
+        await supabase
+            .from('tournaments')
+            .update({'completed': true})
+            .eq('id', tournamentId);
+        return;
+      }
+      rethrow;
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -529,8 +651,9 @@ await supabase.rpc('apply_tournament_stats', params: {
           _teamsHeader(),
 
           ...rounds.map((roundNumber) {
-            final roundMatches =
-                _matches.where((m) => m.round == roundNumber).toList();
+            final roundMatches = _matches
+                .where((m) => m.round == roundNumber)
+                .toList();
             final allFinished = roundMatches.every((m) => m.finished);
 
             final roundLine = _pointsLineFromTable(_tableForRound(roundNumber));
@@ -562,8 +685,9 @@ await supabase.rpc('apply_tournament_stats', params: {
                     ...roundMatches.map(
                       (m) => ListTile(
                         contentPadding: EdgeInsets.zero,
-                        tileColor:
-                            m.finished ? Colors.green.withOpacity(0.08) : null,
+                        tileColor: m.finished
+                            ? Colors.green.withOpacity(0.08)
+                            : null,
                         title: _matchTitle(m),
                         onTap: (_isCompleted || readOnly)
                             ? null

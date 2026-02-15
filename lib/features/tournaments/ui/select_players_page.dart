@@ -5,11 +5,7 @@ import '../../players/model/player.dart';
 import '../logic/team_builder.dart';
 import 'teams_result_page.dart';
 
-enum TeamSplitMethod {
-  rating,
-  baskets,
-  random,
-}
+enum TeamSplitMethod { rating, baskets, random }
 
 class SelectPlayersPage extends StatefulWidget {
   final String hallId;
@@ -36,9 +32,11 @@ class _SelectPlayersPageState extends State<SelectPlayersPage> {
   final _repo = PlayersRepository.instance;
   final Set<String> _selectedIds = {};
   final TextEditingController _searchController = TextEditingController();
+  final Map<String, int> _basketByPlayerId = {};
 
   TeamSplitMethod _method = TeamSplitMethod.rating;
   String _searchQuery = '';
+  int _basketsCount = 3;
 
   int get _requiredPlayers => widget.teamsCount * widget.playersPerTeam;
 
@@ -62,8 +60,12 @@ class _SelectPlayersPageState extends State<SelectPlayersPage> {
     setState(() {
       if (_selectedIds.contains(id)) {
         _selectedIds.remove(id);
+        _basketByPlayerId.remove(id);
       } else {
         _selectedIds.add(id);
+        if (_method == TeamSplitMethod.baskets) {
+          _ensureBasketAssignments();
+        }
       }
     });
   }
@@ -119,6 +121,9 @@ class _SelectPlayersPageState extends State<SelectPlayersPage> {
 
               setState(() {
                 _selectedIds.add(player.id);
+                if (_method == TeamSplitMethod.baskets) {
+                  _ensureBasketAssignments();
+                }
               });
 
               Navigator.pop(context);
@@ -131,8 +136,10 @@ class _SelectPlayersPageState extends State<SelectPlayersPage> {
   }
 
   void _onBuildTeamsPressed() {
-    final selectedPlayers =
-        _repo.getAll().where((p) => _selectedIds.contains(p.id)).toList();
+    final selectedPlayers = _repo
+        .getAll()
+        .where((p) => _selectedIds.contains(p.id))
+        .toList();
 
     _repo.clearTeams();
 
@@ -140,6 +147,9 @@ class _SelectPlayersPageState extends State<SelectPlayersPage> {
       players: selectedPlayers,
       teamsCount: widget.teamsCount,
       method: _method,
+      basketByPlayerId: _method == TeamSplitMethod.baskets
+          ? _basketByPlayerId
+          : null,
     );
 
     for (int i = 0; i < teams.length; i++) {
@@ -167,9 +177,7 @@ class _SelectPlayersPageState extends State<SelectPlayersPage> {
     final enough = _selectedIds.length == _requiredPlayers;
 
     return Scaffold(
-      appBar: AppBar(
-        title: const Text('Выбор игроков'),
-      ),
+      appBar: AppBar(title: const Text('Выбор игроков')),
       floatingActionButton: FloatingActionButton(
         onPressed: _addPlayerDialog,
         child: const Icon(Icons.add),
@@ -184,10 +192,7 @@ class _SelectPlayersPageState extends State<SelectPlayersPage> {
               children: [
                 const Text(
                   'Формат турнира',
-                  style: TextStyle(
-                    fontWeight: FontWeight.bold,
-                    fontSize: 16,
-                  ),
+                  style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
                 ),
                 RadioListTile<TeamSplitMethod>(
                   title: const Text('По рейтингу'),
@@ -199,7 +204,12 @@ class _SelectPlayersPageState extends State<SelectPlayersPage> {
                   title: const Text('По корзинам'),
                   value: TeamSplitMethod.baskets,
                   groupValue: _method,
-                  onChanged: (v) => setState(() => _method = v!),
+                  onChanged: (v) {
+                    setState(() {
+                      _method = v!;
+                      _ensureBasketAssignments();
+                    });
+                  },
                 ),
                 RadioListTile<TeamSplitMethod>(
                   title: const Text('Случайно'),
@@ -207,6 +217,47 @@ class _SelectPlayersPageState extends State<SelectPlayersPage> {
                   groupValue: _method,
                   onChanged: (v) => setState(() => _method = v!),
                 ),
+                if (_method == TeamSplitMethod.baskets) ...[
+                  const SizedBox(height: 8),
+                  Row(
+                    children: [
+                      const Text('Корзин:'),
+                      const SizedBox(width: 12),
+                      ChoiceChip(
+                        label: const Text('2'),
+                        selected: _basketsCount == 2,
+                        onSelected: (_) {
+                          setState(() {
+                            _basketsCount = 2;
+                            _ensureBasketAssignments(forceRebuild: true);
+                          });
+                        },
+                      ),
+                      const SizedBox(width: 8),
+                      ChoiceChip(
+                        label: const Text('3'),
+                        selected: _basketsCount == 3,
+                        onSelected: (_) {
+                          setState(() {
+                            _basketsCount = 3;
+                            _ensureBasketAssignments(forceRebuild: true);
+                          });
+                        },
+                      ),
+                      const Spacer(),
+                      TextButton(
+                        onPressed: () {
+                          setState(
+                            () => _ensureBasketAssignments(forceRebuild: true),
+                          );
+                        },
+                        child: const Text('Автораскидка'),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 8),
+                  _basketPreview(),
+                ],
               ],
             ),
           ),
@@ -240,6 +291,11 @@ class _SelectPlayersPageState extends State<SelectPlayersPage> {
                 return ListTile(
                   title: Text(p.name),
                   subtitle: Text('Рейтинг: ${p.rating}'),
+                  leading:
+                      _method == TeamSplitMethod.baskets &&
+                          _selectedIds.contains(p.id)
+                      ? _basketChip(p.id)
+                      : null,
                   trailing: Checkbox(
                     value: selected,
                     onChanged: (_) => _toggle(p.id),
@@ -276,5 +332,92 @@ class _SelectPlayersPageState extends State<SelectPlayersPage> {
         ],
       ),
     );
+  }
+
+  Widget _basketChip(String playerId) {
+    final basket = _basketByPlayerId[playerId] ?? 1;
+    return PopupMenuButton<int>(
+      tooltip: 'Корзина',
+      initialValue: basket,
+      onSelected: (value) {
+        setState(() {
+          _basketByPlayerId[playerId] = value;
+        });
+      },
+      itemBuilder: (context) => List.generate(
+        _basketsCount,
+        (index) => PopupMenuItem<int>(
+          value: index + 1,
+          child: Text('Корзина ${index + 1}'),
+        ),
+      ),
+      child: Chip(
+        label: Text('К$basket'),
+        visualDensity: VisualDensity.compact,
+      ),
+    );
+  }
+
+  Widget _basketPreview() {
+    final selectedPlayers =
+        _repo.getAll().where((p) => _selectedIds.contains(p.id)).toList()
+          ..sort((a, b) => b.rating.compareTo(a.rating));
+
+    if (selectedPlayers.isEmpty) {
+      return const Text(
+        'Выбери игроков, чтобы распределить по корзинам.',
+        style: TextStyle(color: Colors.grey),
+      );
+    }
+
+    final counts = List<int>.filled(_basketsCount, 0);
+    for (final p in selectedPlayers) {
+      final basket = (_basketByPlayerId[p.id] ?? 1).clamp(1, _basketsCount);
+      counts[basket - 1]++;
+    }
+
+    return Wrap(
+      spacing: 8,
+      runSpacing: 8,
+      children: List.generate(_basketsCount, (i) {
+        return Chip(label: Text('Корзина ${i + 1}: ${counts[i]}'));
+      }),
+    );
+  }
+
+  void _ensureBasketAssignments({bool forceRebuild = false}) {
+    final selectedPlayers =
+        _repo.getAll().where((p) => _selectedIds.contains(p.id)).toList()
+          ..sort((a, b) => b.rating.compareTo(a.rating));
+
+    if (selectedPlayers.isEmpty) {
+      _basketByPlayerId.clear();
+      return;
+    }
+
+    for (int i = 0; i < selectedPlayers.length; i++) {
+      final player = selectedPlayers[i];
+      if (!forceRebuild && _basketByPlayerId.containsKey(player.id)) {
+        continue;
+      }
+      _basketByPlayerId[player.id] = _autoBasketForIndex(
+        i,
+        selectedPlayers.length,
+      );
+    }
+
+    final stale = _basketByPlayerId.keys
+        .where((id) => !_selectedIds.contains(id))
+        .toList();
+    for (final id in stale) {
+      _basketByPlayerId.remove(id);
+    }
+  }
+
+  int _autoBasketForIndex(int index, int total) {
+    final raw = ((index * _basketsCount) ~/ total) + 1;
+    if (raw < 1) return 1;
+    if (raw > _basketsCount) return _basketsCount;
+    return raw;
   }
 }

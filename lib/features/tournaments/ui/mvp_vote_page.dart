@@ -24,6 +24,8 @@ class _TournamentMvpVotePageState extends State<TournamentMvpVotePage> {
   DateTime? _votingEndsAtUtc;
   bool _votesFinalized = false;
   String? _winnerPlayerId;
+  String? _myLinkedPlayerId;
+  String? _myLinkedPlayerName;
 
   String? _myVoteCandidateId;
   final List<_Participant> _participants = <_Participant>[];
@@ -51,6 +53,8 @@ class _TournamentMvpVotePageState extends State<TournamentMvpVotePage> {
         setState(() {
           _loading = false;
           _tournamentId = null;
+          _myLinkedPlayerId = null;
+          _myLinkedPlayerName = null;
           _participants.clear();
           _votesByCandidateId.clear();
           _myVoteCandidateId = null;
@@ -65,6 +69,7 @@ class _TournamentMvpVotePageState extends State<TournamentMvpVotePage> {
       _winnerPlayerId = tournament['mvp_winner_player_id']?.toString();
 
       await _loadParticipants(_tournamentId!);
+      await _loadProfileLink();
       await _loadVotes(_tournamentId!);
     } catch (e) {
       final missingSchema = _isMissingVotingSchemaError(e);
@@ -167,6 +172,47 @@ class _TournamentMvpVotePageState extends State<TournamentMvpVotePage> {
     _participants.sort((a, b) => a.name.compareTo(b.name));
   }
 
+  Future<void> _loadProfileLink() async {
+    final profileId = supabase.auth.currentUser?.id;
+    if (profileId == null) {
+      _myLinkedPlayerId = null;
+      _myLinkedPlayerName = null;
+      return;
+    }
+
+    final row = await supabase
+        .from('player_profile_links')
+        .select('player_id')
+        .eq('hall_id', widget.hallId)
+        .eq('profile_id', profileId)
+        .maybeSingle();
+
+    final linkedPlayerId = row?['player_id']?.toString();
+    _myLinkedPlayerId = linkedPlayerId;
+    if (linkedPlayerId == null || linkedPlayerId.isEmpty) {
+      _myLinkedPlayerName = null;
+      return;
+    }
+
+    for (final participant in _participants) {
+      if (participant.id == linkedPlayerId) {
+        _myLinkedPlayerName = participant.name;
+        return;
+      }
+    }
+
+    try {
+      final player = await supabase
+          .from('players')
+          .select('name')
+          .eq('id', linkedPlayerId)
+          .maybeSingle();
+      _myLinkedPlayerName = (player?['name'] ?? 'Игрок').toString();
+    } catch (_) {
+      _myLinkedPlayerName = null;
+    }
+  }
+
   Future<void> _loadVotes(String tournamentId) async {
     final currentUserId = supabase.auth.currentUser?.id;
 
@@ -221,6 +267,66 @@ class _TournamentMvpVotePageState extends State<TournamentMvpVotePage> {
     }
   }
 
+  Future<void> _bindProfileToParticipant(String playerId) async {
+    final tournamentId = _tournamentId;
+    if (tournamentId == null) return;
+
+    setState(() => _submitting = true);
+    try {
+      await supabase.rpc(
+        'link_my_profile_to_tournament_player',
+        params: {'p_tournament_id': tournamentId, 'p_player_id': playerId},
+      );
+
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Аккаунт привязан к игроку турнира ✅')),
+      );
+      await _load();
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(_friendlyBindError(e))));
+    } finally {
+      if (mounted) setState(() => _submitting = false);
+    }
+  }
+
+  Future<void> _pickAndBindProfile() async {
+    if (_participants.isEmpty || _submitting) return;
+
+    final selectedPlayerId = await showDialog<String>(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Text('Выбери себя в списке'),
+        content: SizedBox(
+          width: double.maxFinite,
+          child: ListView.builder(
+            shrinkWrap: true,
+            itemCount: _participants.length,
+            itemBuilder: (context, index) {
+              final player = _participants[index];
+              return ListTile(
+                title: Text(player.name),
+                onTap: () => Navigator.pop(context, player.id),
+              );
+            },
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Отмена'),
+          ),
+        ],
+      ),
+    );
+
+    if (selectedPlayerId == null) return;
+    await _bindProfileToParticipant(selectedPlayerId);
+  }
+
   Future<void> _openVotingWindowNow() async {
     final tournamentId = _tournamentId;
     if (tournamentId == null) return;
@@ -263,6 +369,9 @@ class _TournamentMvpVotePageState extends State<TournamentMvpVotePage> {
     if (_isMissingVotingSchemaError(error)) {
       return 'MVP-голосование пока не настроено в БД. Примени SQL-скрипт.';
     }
+    if (text.contains('profile is not linked')) {
+      return 'Сначала привяжи аккаунт к своему игроку в этом турнире.';
+    }
     if (text.contains('participants')) {
       return 'Голосовать могут только участники этого турнира.';
     }
@@ -276,6 +385,20 @@ class _TournamentMvpVotePageState extends State<TournamentMvpVotePage> {
     return 'Не удалось отправить голос: $error';
   }
 
+  String _friendlyBindError(Object error) {
+    final text = error.toString().toLowerCase();
+    if (_isMissingVotingSchemaError(error)) {
+      return 'Схема MVP-голосования не обновлена. Примени новый SQL-скрипт.';
+    }
+    if (text.contains('player is not a participant')) {
+      return 'Можно привязать только игрока из списка участников этого турнира.';
+    }
+    if (text.contains('duplicate key') && text.contains('hall_id, player_id')) {
+      return 'Этот игрок уже привязан к другому аккаунту.';
+    }
+    return 'Не удалось привязать аккаунт: $error';
+  }
+
   bool _isMissingVotingSchemaError(Object error) {
     final text = error.toString().toLowerCase();
     final mentionsMvpSchema =
@@ -284,6 +407,8 @@ class _TournamentMvpVotePageState extends State<TournamentMvpVotePage> {
         text.contains('mvp_finalized_at') ||
         text.contains('mvp_winner_player_id') ||
         text.contains('tournament_mvp_votes') ||
+        text.contains('player_profile_links') ||
+        text.contains('link_my_profile_to_tournament_player') ||
         text.contains('cast_tournament_mvp_vote') ||
         text.contains('finalize_due_mvp_votes') ||
         text.contains('finalize_tournament_mvp');
@@ -323,6 +448,10 @@ class _TournamentMvpVotePageState extends State<TournamentMvpVotePage> {
         _votingEndsAtUtc == null &&
         _canOpenVotingWindow &&
         _tournamentId != null;
+  }
+
+  bool get _canVoteNow {
+    return _votingOpen && !_submitting && _myLinkedPlayerId != null;
   }
 
   String _statusText() {
@@ -415,6 +544,25 @@ class _TournamentMvpVotePageState extends State<TournamentMvpVotePage> {
                 ),
                 const SizedBox(height: 8),
                 Text(_statusText()),
+                if (_myLinkedPlayerId != null) ...[
+                  const SizedBox(height: 8),
+                  Text(
+                    'Твой игрок: ${_myLinkedPlayerName ?? _myLinkedPlayerId}',
+                    style: const TextStyle(fontWeight: FontWeight.w600),
+                  ),
+                ],
+                if (_votingOpen && _myLinkedPlayerId == null) ...[
+                  const SizedBox(height: 10),
+                  const Text(
+                    'Чтобы проголосовать, сначала привяжи аккаунт к себе в составе турнира.',
+                  ),
+                  const SizedBox(height: 8),
+                  OutlinedButton.icon(
+                    onPressed: _submitting ? null : _pickAndBindProfile,
+                    icon: const Icon(Icons.link),
+                    label: const Text('Привязать себя к участнику'),
+                  ),
+                ],
                 if (_canOpenWindowNow) ...[
                   const SizedBox(height: 10),
                   ElevatedButton.icon(
@@ -459,9 +607,7 @@ class _TournamentMvpVotePageState extends State<TournamentMvpVotePage> {
                 trailing: isWinner
                     ? const Icon(Icons.emoji_events, color: Colors.amber)
                     : null,
-                onTap: _votingOpen && !_submitting
-                    ? () => _submitVote(player.id)
-                    : null,
+                onTap: _canVoteNow ? () => _submitVote(player.id) : null,
               ),
             );
           }),

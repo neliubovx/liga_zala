@@ -16,6 +16,7 @@ class _TournamentMvpVotePageState extends State<TournamentMvpVotePage> {
   bool _loading = true;
   bool _submitting = false;
   bool _schemaMissing = false;
+  bool _canOpenVotingWindow = false;
   String? _error;
 
   String? _tournamentId;
@@ -42,6 +43,7 @@ class _TournamentMvpVotePageState extends State<TournamentMvpVotePage> {
     });
 
     try {
+      await _loadVotingPermissions();
       await _tryFinalizeDueVotes();
       final tournament = await _loadLatestCompletedTournament();
       if (tournament == null) {
@@ -90,6 +92,30 @@ class _TournamentMvpVotePageState extends State<TournamentMvpVotePage> {
       if (!_isMissingVotingSchemaError(e)) {
         debugPrint('⚠️ finalize_due_mvp_votes failed: $e');
       }
+    }
+  }
+
+  Future<void> _loadVotingPermissions() async {
+    final profileId = supabase.auth.currentUser?.id;
+    if (profileId == null) {
+      _canOpenVotingWindow = false;
+      return;
+    }
+
+    try {
+      final row = await supabase
+          .from('hall_members')
+          .select('role, status')
+          .eq('hall_id', widget.hallId)
+          .eq('profile_id', profileId)
+          .maybeSingle();
+
+      final role = (row?['role'] ?? '').toString().toLowerCase();
+      final status = (row?['status'] ?? '').toString().toLowerCase();
+      _canOpenVotingWindow =
+          status == 'approved' && (role == 'owner' || role == 'admin');
+    } catch (_) {
+      _canOpenVotingWindow = false;
     }
   }
 
@@ -195,6 +221,43 @@ class _TournamentMvpVotePageState extends State<TournamentMvpVotePage> {
     }
   }
 
+  Future<void> _openVotingWindowNow() async {
+    final tournamentId = _tournamentId;
+    if (tournamentId == null) return;
+
+    setState(() => _submitting = true);
+    try {
+      final endsAtUtc = DateTime.now().toUtc().add(const Duration(hours: 12));
+
+      await supabase
+          .from('tournaments')
+          .update({
+            'mvp_voting_ends_at': endsAtUtc.toIso8601String(),
+            'mvp_votes_finalized': false,
+            'mvp_finalized_at': null,
+            'mvp_winner_player_id': null,
+          })
+          .eq('id', tournamentId);
+
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            'Окно голосования открыто до ${_formatDateTime(endsAtUtc)}',
+          ),
+        ),
+      );
+      await _load();
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('Не удалось открыть окно: $e')));
+    } finally {
+      if (mounted) setState(() => _submitting = false);
+    }
+  }
+
   String _friendlyVoteError(Object error) {
     final text = error.toString().toLowerCase();
     if (_isMissingVotingSchemaError(error)) {
@@ -253,6 +316,13 @@ class _TournamentMvpVotePageState extends State<TournamentMvpVotePage> {
     final endsAt = _votingEndsAtUtc;
     if (endsAt == null) return false;
     return DateTime.now().toUtc().isBefore(endsAt);
+  }
+
+  bool get _canOpenWindowNow {
+    return !_votesFinalized &&
+        _votingEndsAtUtc == null &&
+        _canOpenVotingWindow &&
+        _tournamentId != null;
   }
 
   String _statusText() {
@@ -345,6 +415,14 @@ class _TournamentMvpVotePageState extends State<TournamentMvpVotePage> {
                 ),
                 const SizedBox(height: 8),
                 Text(_statusText()),
+                if (_canOpenWindowNow) ...[
+                  const SizedBox(height: 10),
+                  ElevatedButton.icon(
+                    onPressed: _submitting ? null : _openVotingWindowNow,
+                    icon: const Icon(Icons.how_to_vote),
+                    label: const Text('Открыть голосование на 12 часов'),
+                  ),
+                ],
                 if (winner != null) ...[
                   const SizedBox(height: 8),
                   Text(

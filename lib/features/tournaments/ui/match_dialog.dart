@@ -77,11 +77,7 @@ class _MatchDialogState extends State<MatchDialog> {
         away++;
       }
 
-      widget.match.events.add(
-        MatchEvent.ownGoal(
-          teamIndex: benefitingTeam,
-        ),
-      );
+      widget.match.events.add(MatchEvent.ownGoal(teamIndex: benefitingTeam));
     });
   }
 
@@ -91,6 +87,11 @@ class _MatchDialogState extends State<MatchDialog> {
     final last = widget.match.events.removeLast();
 
     setState(() {
+      final affectsScore =
+          last.type == MatchEventType.goal ||
+          last.type == MatchEventType.ownGoal;
+      if (!affectsScore) return;
+
       if (last.teamIndex == widget.match.homeIndex) {
         if (home > 0) home--;
       } else {
@@ -145,10 +146,7 @@ class _MatchDialogState extends State<MatchDialog> {
         children: [
           Text(
             '$home : $away',
-            style: const TextStyle(
-              fontSize: 28,
-              fontWeight: FontWeight.bold,
-            ),
+            style: const TextStyle(fontSize: 28, fontWeight: FontWeight.bold),
           ),
           const SizedBox(height: 16),
           Wrap(

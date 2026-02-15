@@ -29,6 +29,9 @@ class SchedulePage extends StatefulWidget {
 
 class _SchedulePageState extends State<SchedulePage> {
   final supabase = Supabase.instance.client;
+  static final RegExp _uuidRegex = RegExp(
+    r'^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$',
+  );
 
   bool _loading = true;
   bool _finishing = false;
@@ -38,6 +41,10 @@ class _SchedulePageState extends State<SchedulePage> {
 
   final List<MatchGame> _matches = [];
   final Map<int, String> _teamNames = {};
+  final Map<int, List<Player>> _teamRosterByIndex = {};
+  final Map<String, int> _teamIndexByUserId = {};
+  final Map<String, String> _userNameById = {};
+  final Map<String, String> _userIdByAppId = {};
   bool _rosterExpanded = false;
 
   String get _prefsKey => 'active_tournament_${widget.hallId}';
@@ -59,11 +66,11 @@ class _SchedulePageState extends State<SchedulePage> {
 
   Future<void> _loadAll() async {
     setState(() => _loading = true);
-    await Future.wait([
-      _loadTournamentCompleted(),
-      _loadTeamNames(),
-      _loadMatches(),
-    ]);
+    await _loadTournamentCompleted();
+    await _loadTeamNames();
+    await _loadTeamRosters();
+    await _loadMatches();
+    await _loadMatchEvents();
     if (mounted) setState(() => _loading = false);
   }
 
@@ -121,6 +128,249 @@ class _SchedulePageState extends State<SchedulePage> {
       }
     } catch (e) {
       debugPrint('❌ Ошибка загрузки имен команд: $e');
+    }
+  }
+
+  Future<void> _loadTeamRosters() async {
+    _teamRosterByIndex.clear();
+    _teamIndexByUserId.clear();
+    _userNameById.clear();
+    _userIdByAppId.clear();
+
+    try {
+      final teamRows = await supabase
+          .from('teams')
+          .select('id, team_index')
+          .eq('tournament_id', widget.tournamentId);
+
+      final teamIndexByTeamId = <String, int>{};
+      for (final row in (teamRows as List).cast<Map<String, dynamic>>()) {
+        final teamId = row['id']?.toString();
+        final teamIndex = (row['team_index'] as num?)?.toInt();
+        if (teamId == null || teamIndex == null) continue;
+        teamIndexByTeamId[teamId] = teamIndex;
+        _teamRosterByIndex.putIfAbsent(teamIndex, () => <Player>[]);
+      }
+
+      if (teamIndexByTeamId.isEmpty) {
+        await _hydrateRosterFromLocalTeams();
+        return;
+      }
+
+      final tpRows = await supabase
+          .from('team_players')
+          .select('team_id, player_id')
+          .eq('tournament_id', widget.tournamentId);
+
+      final playerIds = <String>{};
+      final teamPlayers = (tpRows as List).cast<Map<String, dynamic>>();
+      for (final row in teamPlayers) {
+        final playerId = row['player_id']?.toString();
+        if (playerId != null && playerId.isNotEmpty) {
+          playerIds.add(playerId);
+        }
+      }
+
+      final playersById = <String, Map<String, dynamic>>{};
+      if (playerIds.isNotEmpty) {
+        final playerRows = await supabase
+            .from('players')
+            .select('id, app_id, name, rating')
+            .inFilter('id', playerIds.toList());
+
+        for (final row in (playerRows as List).cast<Map<String, dynamic>>()) {
+          final playerId = row['id']?.toString();
+          if (playerId != null && playerId.isNotEmpty) {
+            playersById[playerId] = row;
+          }
+        }
+      }
+
+      for (final row in teamPlayers) {
+        final teamId = row['team_id']?.toString();
+        final userId = row['player_id']?.toString();
+        if (teamId == null || userId == null || userId.isEmpty) continue;
+
+        final teamIndex = teamIndexByTeamId[teamId];
+        if (teamIndex == null) continue;
+
+        final player = playersById[userId];
+        final name = (player?['name'] ?? 'Игрок').toString();
+        final rating = (player?['rating'] as num?)?.toInt() ?? 0;
+        final appId = (player?['app_id'] ?? '').toString();
+
+        _teamRosterByIndex.putIfAbsent(teamIndex, () => <Player>[]);
+        _teamRosterByIndex[teamIndex]!.add(
+          Player(id: userId, name: name, rating: rating, teamIndex: teamIndex),
+        );
+        _teamIndexByUserId[userId] = teamIndex;
+        _userNameById[userId] = name;
+
+        if (appId.isNotEmpty) {
+          _userIdByAppId[appId] = userId;
+        }
+      }
+
+      for (final roster in _teamRosterByIndex.values) {
+        roster.sort((a, b) => a.name.compareTo(b.name));
+      }
+
+      final hasRoster = _teamRosterByIndex.values.any((it) => it.isNotEmpty);
+      if (!hasRoster) {
+        await _hydrateRosterFromLocalTeams();
+      }
+    } catch (e) {
+      debugPrint('❌ Ошибка загрузки составов: $e');
+      await _hydrateRosterFromLocalTeams();
+    }
+  }
+
+  Future<void> _hydrateRosterFromLocalTeams() async {
+    final localTeams = widget.teams;
+    if (localTeams == null) return;
+
+    for (int i = 0; i < localTeams.length; i++) {
+      _teamRosterByIndex.putIfAbsent(i, () => <Player>[]);
+    }
+
+    final appIds = <String>{};
+    for (final team in localTeams) {
+      for (final player in team) {
+        if (player.id.isNotEmpty) appIds.add(player.id);
+      }
+    }
+
+    final byAppId = <String, Map<String, dynamic>>{};
+    if (appIds.isNotEmpty) {
+      try {
+        final rows = await supabase
+            .from('players')
+            .select('id, app_id, name, rating')
+            .inFilter('app_id', appIds.toList());
+        for (final row in (rows as List).cast<Map<String, dynamic>>()) {
+          final appId = row['app_id']?.toString();
+          if (appId != null && appId.isNotEmpty) {
+            byAppId[appId] = row;
+          }
+        }
+      } catch (e) {
+        debugPrint('⚠️ Не удалось сопоставить app_id -> user_id: $e');
+      }
+    }
+
+    for (int i = 0; i < localTeams.length; i++) {
+      final roster = _teamRosterByIndex[i]!;
+      if (roster.isNotEmpty) continue;
+
+      for (final player in localTeams[i]) {
+        final dbRow = byAppId[player.id];
+        final userId = dbRow?['id']?.toString() ?? player.id;
+        final name = (dbRow?['name'] ?? player.name).toString();
+        final rating = (dbRow?['rating'] as num?)?.toInt() ?? player.rating;
+
+        roster.add(
+          Player(id: userId, name: name, rating: rating, teamIndex: i),
+        );
+
+        if (dbRow != null) {
+          _teamIndexByUserId[userId] = i;
+          _userNameById[userId] = name;
+          _userIdByAppId[player.id] = userId;
+        }
+      }
+      roster.sort((a, b) => a.name.compareTo(b.name));
+    }
+  }
+
+  Future<void> _loadMatchEvents() async {
+    if (_matches.isEmpty) return;
+
+    for (final match in _matches) {
+      match.events = <MatchEvent>[];
+    }
+
+    try {
+      final rows = await supabase
+          .from('match_events')
+          .select('match_id, user_id, goals, assists')
+          .eq('hall_id', widget.hallId)
+          .eq('tournament_id', widget.tournamentId);
+
+      final eventsByMatchId = <String, List<Map<String, dynamic>>>{};
+      for (final raw in (rows as List).cast<Map<String, dynamic>>()) {
+        final matchId = raw['match_id']?.toString();
+        if (matchId == null || matchId.isEmpty) continue;
+        eventsByMatchId.putIfAbsent(matchId, () => <Map<String, dynamic>>[]);
+        eventsByMatchId[matchId]!.add(raw);
+      }
+
+      for (final match in _matches) {
+        final rowsForMatch =
+            eventsByMatchId[match.id] ?? const <Map<String, dynamic>>[];
+        final events = <MatchEvent>[];
+
+        for (final row in rowsForMatch) {
+          final userId = row['user_id']?.toString();
+          if (userId == null || userId.isEmpty) continue;
+
+          final teamIndex = _teamIndexByUserId[userId];
+          if (teamIndex == null) continue;
+
+          final playerName = _userNameById[userId] ?? 'Игрок';
+          final goals = (row['goals'] as num?)?.toInt() ?? 0;
+          final assists = (row['assists'] as num?)?.toInt() ?? 0;
+
+          for (int i = 0; i < goals; i++) {
+            events.add(
+              MatchEvent.goal(
+                teamIndex: teamIndex,
+                playerId: userId,
+                playerName: playerName,
+              ),
+            );
+          }
+          for (int i = 0; i < assists; i++) {
+            events.add(
+              MatchEvent.assist(
+                teamIndex: teamIndex,
+                playerId: userId,
+                playerName: playerName,
+              ),
+            );
+          }
+        }
+
+        final homeGoalsFromEvents = events
+            .where(
+              (event) =>
+                  event.teamIndex == match.homeIndex &&
+                  (event.type == MatchEventType.goal ||
+                      event.type == MatchEventType.ownGoal),
+            )
+            .length;
+        final awayGoalsFromEvents = events
+            .where(
+              (event) =>
+                  event.teamIndex == match.awayIndex &&
+                  (event.type == MatchEventType.goal ||
+                      event.type == MatchEventType.ownGoal),
+            )
+            .length;
+
+        final missingHomeGoals = match.homeScore - homeGoalsFromEvents;
+        final missingAwayGoals = match.awayScore - awayGoalsFromEvents;
+
+        for (int i = 0; i < missingHomeGoals; i++) {
+          events.add(MatchEvent.ownGoal(teamIndex: match.homeIndex));
+        }
+        for (int i = 0; i < missingAwayGoals; i++) {
+          events.add(MatchEvent.ownGoal(teamIndex: match.awayIndex));
+        }
+
+        match.events = events;
+      }
+    } catch (e) {
+      debugPrint('⚠️ Не удалось загрузить match_events: $e');
     }
   }
 
@@ -183,6 +433,8 @@ class _SchedulePageState extends State<SchedulePage> {
             'finished': match.finished,
           })
           .eq('id', match.id);
+
+      await _saveMatchEvents(match);
     } catch (e) {
       debugPrint('❌ Ошибка сохранения матча: $e');
       if (mounted) {
@@ -191,6 +443,18 @@ class _SchedulePageState extends State<SchedulePage> {
         );
       }
     }
+  }
+
+  List<Player> _playersForTeam(int teamIndex) {
+    final roster = _teamRosterByIndex[teamIndex];
+    if (roster != null && roster.isNotEmpty) {
+      return roster;
+    }
+
+    final teams = widget.teams;
+    if (teams == null) return const <Player>[];
+    if (teamIndex < 0 || teamIndex >= teams.length) return const <Player>[];
+    return teams[teamIndex];
   }
 
   void _openMatch(MatchGame match) {
@@ -202,14 +466,106 @@ class _SchedulePageState extends State<SchedulePage> {
       builder: (_) => MatchDialog(
         match: match,
         teamName: _teamLetter,
-        homePlayers: widget.teams![match.homeIndex],
-        awayPlayers: widget.teams![match.awayIndex],
+        homePlayers: _playersForTeam(match.homeIndex),
+        awayPlayers: _playersForTeam(match.awayIndex),
         onSave: () async {
           setState(() {});
           await _saveMatchToSupabase(match);
         },
       ),
     );
+  }
+
+  Future<void> _saveMatchEvents(MatchGame match) async {
+    await supabase.from('match_events').delete().eq('match_id', match.id);
+
+    if (!match.finished || match.events.isEmpty) return;
+
+    final statsByUserId = <String, _EventStatsAccumulator>{};
+    for (final event in match.events) {
+      if (event.type == MatchEventType.ownGoal) continue;
+
+      if (event.type == MatchEventType.goal) {
+        final scorerId = _resolveUserId(event.playerId);
+        if (scorerId != null) {
+          final scorerStats = statsByUserId.putIfAbsent(
+            scorerId,
+            () => _EventStatsAccumulator(teamIndex: event.teamIndex),
+          );
+          scorerStats.goals += 1;
+          scorerStats.teamIndex = event.teamIndex;
+        }
+
+        final assistId = _resolveUserId(event.assistPlayerId);
+        if (assistId != null) {
+          final assistStats = statsByUserId.putIfAbsent(
+            assistId,
+            () => _EventStatsAccumulator(teamIndex: event.teamIndex),
+          );
+          assistStats.assists += 1;
+          assistStats.teamIndex = event.teamIndex;
+        }
+      }
+
+      if (event.type == MatchEventType.assist) {
+        final assistId = _resolveUserId(event.playerId);
+        if (assistId != null) {
+          final assistStats = statsByUserId.putIfAbsent(
+            assistId,
+            () => _EventStatsAccumulator(teamIndex: event.teamIndex),
+          );
+          assistStats.assists += 1;
+          assistStats.teamIndex = event.teamIndex;
+        }
+      }
+    }
+
+    if (statsByUserId.isEmpty) return;
+
+    final insertRows = <Map<String, dynamic>>[];
+    statsByUserId.forEach((userId, stats) {
+      insertRows.add({
+        'hall_id': widget.hallId,
+        'tournament_id': widget.tournamentId.toString(),
+        'match_id': match.id,
+        'user_id': userId,
+        'goals': stats.goals,
+        'assists': stats.assists,
+        'result': _resultForTeam(match, stats.teamIndex),
+        'was_captain': false,
+        'was_mvp': false,
+      });
+    });
+
+    await supabase.from('match_events').insert(insertRows);
+  }
+
+  String _resultForTeam(MatchGame match, int teamIndex) {
+    if (match.homeScore == match.awayScore) return 'draw';
+
+    final isHome = teamIndex == match.homeIndex;
+    if (isHome) {
+      return match.homeScore > match.awayScore ? 'win' : 'loss';
+    }
+    return match.awayScore > match.homeScore ? 'win' : 'loss';
+  }
+
+  String? _resolveUserId(String? maybeUserOrAppId) {
+    if (maybeUserOrAppId == null) return null;
+    final value = maybeUserOrAppId.trim();
+    if (value.isEmpty) return null;
+
+    final fromAppId = _userIdByAppId[value];
+    if (fromAppId != null && fromAppId.isNotEmpty) {
+      return fromAppId;
+    }
+    if (_teamIndexByUserId.containsKey(value)) {
+      return value;
+    }
+    if (_uuidRegex.hasMatch(value)) {
+      return value;
+    }
+    return null;
   }
 
   // --------- UI helpers ----------
@@ -284,7 +640,12 @@ class _SchedulePageState extends State<SchedulePage> {
   // --------- Header "Составы" (ровные колонки) ----------
 
   Widget _teamsHeader() {
-    if (widget.teams == null) return const SizedBox.shrink();
+    final maxRosterIndex = _teamRosterByIndex.keys.fold<int>(
+      -1,
+      (maxIndex, current) => current > maxIndex ? current : maxIndex,
+    );
+    final teamCount = widget.teams?.length ?? (maxRosterIndex + 1);
+    if (teamCount <= 0) return const SizedBox.shrink();
 
     final titleStyle = TextStyle(
       fontSize: 12,
@@ -323,7 +684,7 @@ class _SchedulePageState extends State<SchedulePage> {
               ),
             ),
             children: [
-              for (int i = 0; i < widget.teams!.length; i++)
+              for (int i = 0; i < teamCount; i++)
                 Padding(
                   padding: const EdgeInsets.symmetric(vertical: 4),
                   child: Row(
@@ -347,7 +708,7 @@ class _SchedulePageState extends State<SchedulePage> {
                       // состав (ровно по старту строки)
                       Expanded(
                         child: Text(
-                          widget.teams![i].map((p) => p.name).join(', '),
+                          _playersForTeam(i).map((p) => p.name).join(', '),
                           style: rosterStyle,
                         ),
                       ),
@@ -485,6 +846,7 @@ class _SchedulePageState extends State<SchedulePage> {
     );
 
     if (ok != true) return;
+    final mvpUserId = await _pickTournamentMvp();
 
     if (!mounted) return;
     setState(() => _finishing = true);
@@ -502,6 +864,7 @@ class _SchedulePageState extends State<SchedulePage> {
           'apply_tournament_stats',
           params: {'p_tournament_id': tid},
         );
+        await _applyMatchEventsToPlayerStats(tid, mvpUserId: mvpUserId);
       }
 
       await _markTournamentCompleted(
@@ -542,6 +905,151 @@ class _SchedulePageState extends State<SchedulePage> {
       );
     } finally {
       if (mounted) setState(() => _finishing = false);
+    }
+  }
+
+  Future<String?> _pickTournamentMvp() {
+    final candidatesById = <String, Player>{};
+    for (final roster in _teamRosterByIndex.values) {
+      for (final player in roster) {
+        candidatesById[player.id] = player;
+      }
+    }
+
+    if (candidatesById.isEmpty && widget.teams != null) {
+      for (int i = 0; i < widget.teams!.length; i++) {
+        for (final player in widget.teams![i]) {
+          final resolvedId = _resolveUserId(player.id) ?? player.id;
+          candidatesById[resolvedId] = player.copyWith(id: resolvedId);
+        }
+      }
+    }
+
+    final candidates = candidatesById.values.toList()
+      ..sort((a, b) => a.name.compareTo(b.name));
+    if (candidates.isEmpty) return Future.value(null);
+
+    return showDialog<String?>(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Text('MVP вратарь (опционально)'),
+        content: SizedBox(
+          width: double.maxFinite,
+          child: ListView.builder(
+            shrinkWrap: true,
+            itemCount: candidates.length,
+            itemBuilder: (context, index) {
+              final player = candidates[index];
+              return ListTile(
+                title: Text(player.name),
+                onTap: () => Navigator.pop(
+                  context,
+                  _resolveUserId(player.id) ?? player.id,
+                ),
+              );
+            },
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Без MVP'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _applyMatchEventsToPlayerStats(
+    String tournamentId, {
+    String? mvpUserId,
+  }) async {
+    final rows = await supabase
+        .from('match_events')
+        .select('user_id, goals, assists')
+        .eq('hall_id', widget.hallId)
+        .eq('tournament_id', tournamentId);
+
+    final deltaByUserId = <String, _PlayerStatsDelta>{};
+    for (final row in (rows as List).cast<Map<String, dynamic>>()) {
+      final userId = _resolveUserId(row['user_id']?.toString());
+      if (userId == null) continue;
+
+      final delta = deltaByUserId.putIfAbsent(userId, _PlayerStatsDelta.new);
+      delta.goals += (row['goals'] as num?)?.toInt() ?? 0;
+      delta.assists += (row['assists'] as num?)?.toInt() ?? 0;
+    }
+
+    final resolvedMvpUserId = _resolveUserId(mvpUserId);
+    if (resolvedMvpUserId != null) {
+      final delta = deltaByUserId.putIfAbsent(
+        resolvedMvpUserId,
+        _PlayerStatsDelta.new,
+      );
+      delta.mvpCount += 1;
+      await _markMvpRow(tournamentId, resolvedMvpUserId);
+    }
+
+    if (deltaByUserId.isEmpty) return;
+
+    final userIds = deltaByUserId.keys.toList();
+    final existingRows = await supabase
+        .from('player_stats')
+        .select('id, user_id, goals, assists, mvp_count')
+        .eq('hall_id', widget.hallId)
+        .inFilter('user_id', userIds);
+
+    final byUserId = <String, Map<String, dynamic>>{};
+    for (final row in (existingRows as List).cast<Map<String, dynamic>>()) {
+      final userId = row['user_id']?.toString();
+      if (userId != null && userId.isNotEmpty) {
+        byUserId[userId] = row;
+      }
+    }
+
+    for (final entry in deltaByUserId.entries) {
+      final existing = byUserId[entry.key];
+      if (existing == null) {
+        debugPrint(
+          '⚠️ player_stats not found for user ${entry.key}, goals/assists update skipped',
+        );
+        continue;
+      }
+
+      final goals = (existing['goals'] as num?)?.toInt() ?? 0;
+      final assists = (existing['assists'] as num?)?.toInt() ?? 0;
+      final mvpCount = (existing['mvp_count'] as num?)?.toInt() ?? 0;
+
+      await supabase
+          .from('player_stats')
+          .update({
+            'goals': goals + entry.value.goals,
+            'assists': assists + entry.value.assists,
+            'mvp_count': mvpCount + entry.value.mvpCount,
+          })
+          .eq('id', existing['id'].toString());
+    }
+  }
+
+  Future<void> _markMvpRow(String tournamentId, String mvpUserId) async {
+    try {
+      final row = await supabase
+          .from('match_events')
+          .select('id')
+          .eq('hall_id', widget.hallId)
+          .eq('tournament_id', tournamentId)
+          .eq('user_id', mvpUserId)
+          .order('created_at', ascending: false)
+          .limit(1)
+          .maybeSingle();
+
+      if (row == null) return;
+      await supabase
+          .from('match_events')
+          .update({'was_mvp': true})
+          .eq('id', row['id'].toString());
+    } catch (e) {
+      debugPrint('⚠️ Не удалось отметить MVP в match_events: $e');
     }
   }
 
@@ -736,4 +1244,18 @@ class _SchedulePageState extends State<SchedulePage> {
       ),
     );
   }
+}
+
+class _EventStatsAccumulator {
+  _EventStatsAccumulator({required this.teamIndex});
+
+  int teamIndex;
+  int goals = 0;
+  int assists = 0;
+}
+
+class _PlayerStatsDelta {
+  int goals = 0;
+  int assists = 0;
+  int mvpCount = 0;
 }

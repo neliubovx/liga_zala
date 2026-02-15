@@ -923,13 +923,13 @@ class _SchedulePageState extends State<SchedulePage> {
     );
 
     if (ok != true) return;
-    final mvpUserId = await _pickTournamentMvp();
 
     if (!mounted) return;
     setState(() => _finishing = true);
 
     final tid = widget.tournamentId.toString();
     bool lockAcquired = false;
+    bool votingOpened = false;
 
     try {
       if (_hasStatsAppliedColumn) {
@@ -941,7 +941,8 @@ class _SchedulePageState extends State<SchedulePage> {
           'apply_tournament_stats',
           params: {'p_tournament_id': tid},
         );
-        await _applyMatchEventsToPlayerStats(tid, mvpUserId: mvpUserId);
+        await _applyMatchEventsToPlayerStats(tid);
+        votingOpened = await _openMvpVotingWindow(tid);
       }
 
       await _markTournamentCompleted(
@@ -964,7 +965,9 @@ class _SchedulePageState extends State<SchedulePage> {
         SnackBar(
           content: Text(
             lockAcquired || !_hasStatsAppliedColumn
-                ? 'Турнир завершён. Статистика обновлена ✅'
+                ? votingOpened
+                      ? 'Турнир завершён. Статистика обновлена ✅ Голосование MVP открыто на 12 часов.'
+                      : 'Турнир завершён. Статистика обновлена ✅'
                 : 'Турнир уже был обработан ранее, повторного начисления нет ✅',
           ),
         ),
@@ -985,62 +988,31 @@ class _SchedulePageState extends State<SchedulePage> {
     }
   }
 
-  Future<String?> _pickTournamentMvp() {
-    final candidatesById = <String, Player>{};
-    for (final roster in _teamRosterByIndex.values) {
-      for (final player in roster) {
-        candidatesById[player.id] = player;
+  Future<bool> _openMvpVotingWindow(String tournamentId) async {
+    final endsAt = DateTime.now().toUtc().add(const Duration(hours: 12));
+
+    try {
+      await supabase
+          .from('tournaments')
+          .update({
+            'mvp_voting_ends_at': endsAt.toIso8601String(),
+            'mvp_votes_finalized': false,
+            'mvp_finalized_at': null,
+            'mvp_winner_player_id': null,
+          })
+          .eq('id', tournamentId);
+
+      return true;
+    } catch (e) {
+      if (_isMissingMvpVotingSchemaError(e)) {
+        debugPrint('⚠️ MVP voting schema missing: $e');
+        return false;
       }
+      rethrow;
     }
-
-    if (candidatesById.isEmpty && widget.teams != null) {
-      for (int i = 0; i < widget.teams!.length; i++) {
-        for (final player in widget.teams![i]) {
-          final resolvedId = _resolveUserId(player.id) ?? player.id;
-          candidatesById[resolvedId] = player.copyWith(id: resolvedId);
-        }
-      }
-    }
-
-    final candidates = candidatesById.values.toList()
-      ..sort((a, b) => a.name.compareTo(b.name));
-    if (candidates.isEmpty) return Future.value(null);
-
-    return showDialog<String?>(
-      context: context,
-      builder: (_) => AlertDialog(
-        title: const Text('MVP вратарь (опционально)'),
-        content: SizedBox(
-          width: double.maxFinite,
-          child: ListView.builder(
-            shrinkWrap: true,
-            itemCount: candidates.length,
-            itemBuilder: (context, index) {
-              final player = candidates[index];
-              return ListTile(
-                title: Text(player.name),
-                onTap: () => Navigator.pop(
-                  context,
-                  _resolveUserId(player.id) ?? player.id,
-                ),
-              );
-            },
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('Без MVP'),
-          ),
-        ],
-      ),
-    );
   }
 
-  Future<void> _applyMatchEventsToPlayerStats(
-    String tournamentId, {
-    String? mvpUserId,
-  }) async {
+  Future<void> _applyMatchEventsToPlayerStats(String tournamentId) async {
     final rows = await supabase
         .from('match_events')
         .select('user_id, goals, assists')
@@ -1057,22 +1029,12 @@ class _SchedulePageState extends State<SchedulePage> {
       delta.assists += (row['assists'] as num?)?.toInt() ?? 0;
     }
 
-    final resolvedMvpUserId = _resolveUserId(mvpUserId);
-    if (resolvedMvpUserId != null) {
-      final delta = deltaByUserId.putIfAbsent(
-        resolvedMvpUserId,
-        _PlayerStatsDelta.new,
-      );
-      delta.mvpCount += 1;
-      await _markMvpRow(tournamentId, resolvedMvpUserId);
-    }
-
     if (deltaByUserId.isEmpty) return;
 
     final userIds = deltaByUserId.keys.toList();
     final existingRows = await supabase
         .from('player_stats')
-        .select('id, user_id, goals, assists, mvp_count')
+        .select('id, user_id, goals, assists')
         .eq('hall_id', widget.hallId)
         .inFilter('user_id', userIds);
 
@@ -1095,44 +1057,31 @@ class _SchedulePageState extends State<SchedulePage> {
 
       final goals = (existing['goals'] as num?)?.toInt() ?? 0;
       final assists = (existing['assists'] as num?)?.toInt() ?? 0;
-      final mvpCount = (existing['mvp_count'] as num?)?.toInt() ?? 0;
 
       await supabase
           .from('player_stats')
           .update({
             'goals': goals + entry.value.goals,
             'assists': assists + entry.value.assists,
-            'mvp_count': mvpCount + entry.value.mvpCount,
           })
           .eq('id', existing['id'].toString());
-    }
-  }
-
-  Future<void> _markMvpRow(String tournamentId, String mvpUserId) async {
-    try {
-      final row = await supabase
-          .from('match_events')
-          .select('id')
-          .eq('hall_id', widget.hallId)
-          .eq('tournament_id', tournamentId)
-          .eq('user_id', mvpUserId)
-          .order('created_at', ascending: false)
-          .limit(1)
-          .maybeSingle();
-
-      if (row == null) return;
-      await supabase
-          .from('match_events')
-          .update({'was_mvp': true})
-          .eq('id', row['id'].toString());
-    } catch (e) {
-      debugPrint('⚠️ Не удалось отметить MVP в match_events: $e');
     }
   }
 
   bool _isMissingStatsAppliedColumnError(Object error) {
     final text = error.toString().toLowerCase();
     return text.contains('stats_applied') &&
+        (text.contains('does not exist') || text.contains('could not find'));
+  }
+
+  bool _isMissingMvpVotingSchemaError(Object error) {
+    final text = error.toString().toLowerCase();
+    final mentionsMvpSchema =
+        text.contains('mvp_voting_ends_at') ||
+        text.contains('mvp_votes_finalized') ||
+        text.contains('mvp_finalized_at') ||
+        text.contains('mvp_winner_player_id');
+    return mentionsMvpSchema &&
         (text.contains('does not exist') || text.contains('could not find'));
   }
 
@@ -1348,5 +1297,4 @@ class _EventStatsAccumulator {
 class _PlayerStatsDelta {
   int goals = 0;
   int assists = 0;
-  int mvpCount = 0;
 }

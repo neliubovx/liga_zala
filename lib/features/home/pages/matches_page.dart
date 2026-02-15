@@ -4,14 +4,12 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../../players/model/player.dart';
 import '../../tournaments/ui/create_tournament_page.dart';
+import '../../tournaments/ui/mvp_vote_page.dart';
 import '../../tournaments/ui/tournaments_history_page.dart';
 import '../../tournaments/ui/schedule_page.dart';
 
 class MatchesPage extends StatefulWidget {
-  const MatchesPage({
-    super.key,
-    required this.hallId,
-  });
+  const MatchesPage({super.key, required this.hallId});
 
   final String hallId;
 
@@ -31,17 +29,22 @@ class MatchesPageState extends State<MatchesPage> {
 
   String? _activeLeaderText; // "A (7 оч.)"
 
+  bool _loadingMvp = true;
+  String _mvpSubtitle = 'Проверяем MVP-голосование...';
+
   String get _prefsKey => 'active_tournament_${widget.hallId}';
 
   @override
   void initState() {
     super.initState();
     _loadActiveTournament();
+    _loadMvpVotingStatus();
   }
 
   /// ✅ дергаем снаружи (из HallHomePage) при переключении вкладки
   void reloadActive() {
     _loadActiveTournament();
+    _loadMvpVotingStatus();
   }
 
   String _formatDate(dynamic iso) {
@@ -58,7 +61,10 @@ class MatchesPageState extends State<MatchesPage> {
   // ✅ только буквы
   String _teamName(int i) => String.fromCharCode(65 + i);
 
-  Map<int, int> _calcPoints(List<Map<String, dynamic>> matches, int teamsCount) {
+  Map<int, int> _calcPoints(
+    List<Map<String, dynamic>> matches,
+    int teamsCount,
+  ) {
     final table = <int, int>{};
     for (int i = 0; i < teamsCount; i++) {
       table[i] = 0;
@@ -100,6 +106,112 @@ class MatchesPageState extends State<MatchesPage> {
       if (a != null && a > maxIdx) maxIdx = a;
     }
     return maxIdx >= 0 ? maxIdx + 1 : 4;
+  }
+
+  bool _isMissingMvpVotingSchemaError(Object error) {
+    final text = error.toString().toLowerCase();
+    final mentionsMvpSchema =
+        text.contains('mvp_voting_ends_at') ||
+        text.contains('mvp_votes_finalized') ||
+        text.contains('mvp_finalized_at') ||
+        text.contains('mvp_winner_player_id') ||
+        text.contains('tournament_mvp_votes') ||
+        text.contains('finalize_due_mvp_votes');
+    return mentionsMvpSchema &&
+        (text.contains('does not exist') ||
+            text.contains('could not find') ||
+            text.contains('function') ||
+            text.contains('column'));
+  }
+
+  String _formatDateTime(DateTime dt) {
+    final local = dt.toLocal();
+    return '${local.day.toString().padLeft(2, '0')}.'
+        '${local.month.toString().padLeft(2, '0')} '
+        '${local.hour.toString().padLeft(2, '0')}:'
+        '${local.minute.toString().padLeft(2, '0')}';
+  }
+
+  Future<void> _loadMvpVotingStatus() async {
+    if (!mounted) return;
+
+    setState(() {
+      _loadingMvp = true;
+      _mvpSubtitle = 'Проверяем MVP-голосование...';
+    });
+
+    try {
+      await supabase.rpc(
+        'finalize_due_mvp_votes',
+        params: {'p_hall_id': widget.hallId},
+      );
+    } catch (e) {
+      if (!_isMissingMvpVotingSchemaError(e)) {
+        debugPrint('⚠️ finalize_due_mvp_votes failed: $e');
+      }
+    }
+
+    try {
+      final rows = await supabase
+          .from('tournaments')
+          .select(
+            'id, date, mvp_voting_ends_at, mvp_votes_finalized, mvp_winner_player_id',
+          )
+          .eq('hall_id', widget.hallId)
+          .eq('completed', true)
+          .order('date', ascending: false)
+          .limit(1);
+
+      final list = (rows as List).cast<Map<String, dynamic>>();
+      if (list.isEmpty) {
+        if (!mounted) return;
+        setState(() {
+          _loadingMvp = false;
+          _mvpSubtitle = 'Пока нет завершённых турниров';
+        });
+        return;
+      }
+
+      final t = list.first;
+      final finalized = (t['mvp_votes_finalized'] as bool?) ?? false;
+      final winnerPlayerId = t['mvp_winner_player_id']?.toString();
+      final endsAt = _parseDateTimeOrNull(t['mvp_voting_ends_at']);
+      final nowUtc = DateTime.now().toUtc();
+
+      String subtitle;
+      if (finalized) {
+        subtitle = winnerPlayerId == null || winnerPlayerId.isEmpty
+            ? 'MVP-голосование завершено (без победителя)'
+            : 'MVP выбран, результаты учтены в рейтинге';
+      } else if (endsAt == null) {
+        subtitle = 'Голосование MVP ещё не настроено для последнего турнира';
+      } else if (nowUtc.isBefore(endsAt)) {
+        subtitle = 'Идёт голосование до ${_formatDateTime(endsAt)}';
+      } else {
+        subtitle = 'Голосование закрыто, ожидается автоматический подсчёт';
+      }
+
+      if (!mounted) return;
+      setState(() {
+        _loadingMvp = false;
+        _mvpSubtitle = subtitle;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _loadingMvp = false;
+        _mvpSubtitle = _isMissingMvpVotingSchemaError(e)
+            ? 'Нужно применить SQL для MVP-голосования'
+            : 'Не удалось загрузить статус MVP-голосования';
+      });
+    }
+  }
+
+  DateTime? _parseDateTimeOrNull(dynamic raw) {
+    if (raw == null) return null;
+    final text = raw.toString().trim();
+    if (text.isEmpty) return null;
+    return DateTime.tryParse(text)?.toUtc();
   }
 
   Future<void> _loadActiveTournament() async {
@@ -183,7 +295,9 @@ class MatchesPageState extends State<MatchesPage> {
     }
   }
 
-  Future<List<List<Player>>> _fetchTeamsForTournament(String tournamentId) async {
+  Future<List<List<Player>>> _fetchTeamsForTournament(
+    String tournamentId,
+  ) async {
     final teamRows = await supabase
         .from('teams')
         .select('id, team_index')
@@ -296,6 +410,7 @@ class MatchesPageState extends State<MatchesPage> {
       );
     } finally {
       _loadActiveTournament();
+      _loadMvpVotingStatus();
     }
   }
 
@@ -342,7 +457,29 @@ class MatchesPageState extends State<MatchesPage> {
                 MaterialPageRoute(
                   builder: (_) => CreateTournamentPage(hallId: widget.hallId),
                 ),
-              ).then((_) => _loadActiveTournament());
+              ).then((_) {
+                _loadActiveTournament();
+                _loadMvpVotingStatus();
+              });
+            },
+          ),
+        ),
+
+        const SizedBox(height: 16),
+
+        Card(
+          child: ListTile(
+            leading: const Icon(Icons.how_to_vote),
+            title: const Text('MVP голосование'),
+            subtitle: Text(_loadingMvp ? 'Загрузка...' : _mvpSubtitle),
+            onTap: () async {
+              await Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (_) => TournamentMvpVotePage(hallId: widget.hallId),
+                ),
+              );
+              _loadMvpVotingStatus();
             },
           ),
         ),

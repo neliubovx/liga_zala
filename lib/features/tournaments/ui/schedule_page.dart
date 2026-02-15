@@ -440,10 +440,11 @@ class _SchedulePageState extends State<SchedulePage> {
       await _saveMatchEvents(match);
     } catch (e) {
       debugPrint('❌ Ошибка сохранения матча: $e');
+      final message = _friendlyMatchSaveError(e);
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Не удалось сохранить матч: $e')),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text(message)));
       }
     }
   }
@@ -1133,6 +1134,20 @@ class _SchedulePageState extends State<SchedulePage> {
     final text = error.toString().toLowerCase();
     return text.contains('stats_applied') &&
         (text.contains('does not exist') || text.contains('could not find'));
+  }
+
+  String _friendlyMatchSaveError(Object error) {
+    final text = error.toString().toLowerCase();
+
+    final profileFkError =
+        text.contains('match_events_user_id_fkey') && text.contains('profiles');
+    if (profileFkError) {
+      return 'Не удалось сохранить гол/пас: в базе match_events.user_id '
+          'ссылается на profiles, а должен на players. '
+          'Нужен SQL-фикс внешнего ключа.';
+    }
+
+    return 'Не удалось сохранить матч: $error';
   }
 
   Future<bool> _tryAcquireStatsApplyLock(String tournamentId) async {

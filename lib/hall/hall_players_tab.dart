@@ -17,6 +17,7 @@ class HallPlayersTab extends StatefulWidget {
 
 class _HallPlayersTabState extends State<HallPlayersTab> {
   final supabase = Supabase.instance.client;
+  static const Duration _requestTimeout = Duration(seconds: 12);
 
   List<Map<String, dynamic>> _players = [];
   final Map<String, String?> _linkedProfileIdByPlayerId = {};
@@ -36,14 +37,38 @@ class _HallPlayersTabState extends State<HallPlayersTab> {
     _loadPlayers();
   }
 
+  Future<T> _withTimeout<T>(Future<T> future) {
+    return future.timeout(_requestTimeout);
+  }
+
+  bool _isNetworkError(Object error) {
+    final text = error.toString().toLowerCase();
+    return text.contains('socketexception') ||
+        text.contains('timed out') ||
+        text.contains('failed host lookup') ||
+        text.contains('errno = 60') ||
+        text.contains('connection closed') ||
+        text.contains('network is unreachable');
+  }
+
+  String _friendlyLoadError(Object error) {
+    if (_isNetworkError(error)) {
+      return 'Не удалось загрузить игроков из-за сети. '
+          'Проверь интернет/VPN и нажми "Повторить".';
+    }
+    return 'Не удалось загрузить игроков: $error';
+  }
+
   Future<Set<String>> _fetchLegacyPlayerIdsFromTournamentRows() async {
     final ids = <String>{};
 
     try {
-      final joinedRows = await supabase
-          .from('team_players')
-          .select('player_id, tournaments!inner(hall_id)')
-          .eq('tournaments.hall_id', widget.hallId);
+      final joinedRows = await _withTimeout(
+        supabase
+            .from('team_players')
+            .select('player_id, tournaments!inner(hall_id)')
+            .eq('tournaments.hall_id', widget.hallId),
+      );
 
       for (final row in (joinedRows as List).cast<Map<String, dynamic>>()) {
         final playerId = row['player_id']?.toString();
@@ -56,10 +81,9 @@ class _HallPlayersTabState extends State<HallPlayersTab> {
       // Fallback ниже, если join-filter недоступен.
     }
 
-    final tRows = await supabase
-        .from('tournaments')
-        .select('id')
-        .eq('hall_id', widget.hallId);
+    final tRows = await _withTimeout(
+      supabase.from('tournaments').select('id').eq('hall_id', widget.hallId),
+    );
     final tournamentIds = <String>[];
     for (final row in (tRows as List).cast<Map<String, dynamic>>()) {
       final id = row['id']?.toString();
@@ -70,10 +94,12 @@ class _HallPlayersTabState extends State<HallPlayersTab> {
 
     if (tournamentIds.isEmpty) return ids;
 
-    final tpRows = await supabase
-        .from('team_players')
-        .select('player_id')
-        .inFilter('tournament_id', tournamentIds);
+    final tpRows = await _withTimeout(
+      supabase
+          .from('team_players')
+          .select('player_id')
+          .inFilter('tournament_id', tournamentIds),
+    );
     for (final row in (tpRows as List).cast<Map<String, dynamic>>()) {
       final playerId = row['player_id']?.toString();
       if (playerId != null && playerId.isNotEmpty) {
@@ -90,24 +116,33 @@ class _HallPlayersTabState extends State<HallPlayersTab> {
 
     if (_myProfileId == null) return;
 
-    final row = await supabase
-        .from('hall_members')
-        .select('status')
-        .eq('hall_id', widget.hallId)
-        .eq('profile_id', _myProfileId!)
-        .maybeSingle();
+    try {
+      final row = await _withTimeout(
+        supabase
+            .from('hall_members')
+            .select('status')
+            .eq('hall_id', widget.hallId)
+            .eq('profile_id', _myProfileId!)
+            .maybeSingle(),
+      );
 
-    _isApprovedMember =
-        (row?['status'] ?? '').toString().toLowerCase() == 'approved';
+      _isApprovedMember =
+          (row?['status'] ?? '').toString().toLowerCase() == 'approved';
+    } catch (_) {
+      // Membership only controls link button state; it must not block players list.
+      _isApprovedMember = false;
+    }
   }
 
   Future<List<Map<String, dynamic>>> _fetchHallPlayers() async {
     final mergedById = <String, Map<String, dynamic>>{};
 
-    final directRows = await supabase
-        .from('players')
-        .select('id, name, user_id, hall_id')
-        .eq('hall_id', widget.hallId);
+    final directRows = await _withTimeout(
+      supabase
+          .from('players')
+          .select('id, name, user_id, hall_id')
+          .eq('hall_id', widget.hallId),
+    );
 
     for (final row in (directRows as List).cast<Map<String, dynamic>>()) {
       final id = row['id']?.toString();
@@ -121,10 +156,12 @@ class _HallPlayersTabState extends State<HallPlayersTab> {
         .toList();
 
     if (missingIds.isNotEmpty) {
-      final legacyRows = await supabase
-          .from('players')
-          .select('id, name, user_id, hall_id')
-          .inFilter('id', missingIds);
+      final legacyRows = await _withTimeout(
+        supabase
+            .from('players')
+            .select('id, name, user_id, hall_id')
+            .inFilter('id', missingIds),
+      );
 
       for (final row in (legacyRows as List).cast<Map<String, dynamic>>()) {
         final id = row['id']?.toString();
@@ -209,9 +246,11 @@ class _HallPlayersTabState extends State<HallPlayersTab> {
 
     setState(() => _linkingPlayerId = playerId);
     try {
-      await supabase.rpc(
-        'link_my_profile_to_hall_player',
-        params: {'p_hall_id': widget.hallId, 'p_player_id': playerId},
+      await _withTimeout(
+        supabase.rpc(
+          'link_my_profile_to_hall_player',
+          params: {'p_hall_id': widget.hallId, 'p_player_id': playerId},
+        ),
       );
 
       if (!mounted) return;
@@ -240,47 +279,54 @@ class _HallPlayersTabState extends State<HallPlayersTab> {
 
       await _loadMembership();
       final players = await _fetchHallPlayers();
-
-      final linksRows = await supabase
-          .from('player_profile_links')
-          .select('player_id, profile_id')
-          .eq('hall_id', widget.hallId);
-
       _linkedProfileIdByPlayerId.clear();
       _profileLabelById.clear();
       _myLinkedPlayerId = null;
+      try {
+        final linksRows = await _withTimeout(
+          supabase
+              .from('player_profile_links')
+              .select('player_id, profile_id')
+              .eq('hall_id', widget.hallId),
+        );
 
-      final profileIds = <String>{};
-      for (final row in (linksRows as List).cast<Map<String, dynamic>>()) {
-        final playerId = row['player_id']?.toString();
-        final profileId = row['profile_id']?.toString();
-        if (playerId == null || playerId.isEmpty) continue;
-        _linkedProfileIdByPlayerId[playerId] = profileId;
-        if (profileId != null && profileId.isNotEmpty) {
-          profileIds.add(profileId);
+        final profileIds = <String>{};
+        for (final row in (linksRows as List).cast<Map<String, dynamic>>()) {
+          final playerId = row['player_id']?.toString();
+          final profileId = row['profile_id']?.toString();
+          if (playerId == null || playerId.isEmpty) continue;
+          _linkedProfileIdByPlayerId[playerId] = profileId;
+          if (profileId != null && profileId.isNotEmpty) {
+            profileIds.add(profileId);
+          }
+          if (profileId != null &&
+              profileId == _myProfileId &&
+              _myLinkedPlayerId == null) {
+            _myLinkedPlayerId = playerId;
+          }
         }
-        if (profileId != null &&
-            profileId == _myProfileId &&
-            _myLinkedPlayerId == null) {
-          _myLinkedPlayerId = playerId;
-        }
-      }
 
-      if (profileIds.isNotEmpty) {
-        final profileRows = await supabase
-            .from('profiles')
-            .select('id, display_name, email')
-            .inFilter('id', profileIds.toList());
-        for (final row in (profileRows as List).cast<Map<String, dynamic>>()) {
-          final profileId = row['id']?.toString();
-          if (profileId == null || profileId.isEmpty) continue;
-          final displayName = (row['display_name'] ?? '').toString().trim();
-          final email = (row['email'] ?? '').toString().trim();
-          final label = displayName.isNotEmpty
-              ? displayName
-              : (email.isNotEmpty ? email : 'Аккаунт');
-          _profileLabelById[profileId] = label;
+        if (profileIds.isNotEmpty) {
+          final profileRows = await _withTimeout(
+            supabase
+                .from('profiles')
+                .select('id, display_name, email')
+                .inFilter('id', profileIds.toList()),
+          );
+          for (final row
+              in (profileRows as List).cast<Map<String, dynamic>>()) {
+            final profileId = row['id']?.toString();
+            if (profileId == null || profileId.isEmpty) continue;
+            final displayName = (row['display_name'] ?? '').toString().trim();
+            final email = (row['email'] ?? '').toString().trim();
+            final label = displayName.isNotEmpty
+                ? displayName
+                : (email.isNotEmpty ? email : 'Аккаунт');
+            _profileLabelById[profileId] = label;
+          }
         }
+      } catch (_) {
+        // Links are optional for rendering the players list.
       }
 
       setState(() {
@@ -290,7 +336,7 @@ class _HallPlayersTabState extends State<HallPlayersTab> {
     } catch (e) {
       setState(() {
         _loading = false;
-        _error = 'Не удалось загрузить игроков: $e';
+        _error = _friendlyLoadError(e);
       });
     }
   }

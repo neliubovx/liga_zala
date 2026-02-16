@@ -356,75 +356,86 @@ class _HallPlayersTabState extends State<HallPlayersTab> {
         _myProfileId != null &&
         (linkedProfileId == null || linkedProfileId == _myProfileId) &&
         !isMyPlayer;
+    final statusIcon = linkedProfileId == null
+        ? const Icon(Icons.link_off, size: 14, color: Colors.grey)
+        : isMyPlayer
+        ? const Icon(Icons.verified, size: 14, color: Colors.green)
+        : const Icon(Icons.link, size: 14, color: Colors.blueGrey);
 
-    final accountStatusText = linkedProfileId == null
-        ? 'Без привязанного аккаунта'
-        : (linkedProfileLabel == null || linkedProfileLabel.trim().isEmpty
-              ? 'Аккаунт привязан'
-              : 'Аккаунт: $linkedProfileLabel');
+    Widget trailing = const SizedBox.shrink();
+    if (isMyPlayer) {
+      trailing = const Text(
+        'Я',
+        style: TextStyle(
+          fontSize: 11,
+          fontWeight: FontWeight.w700,
+          color: Colors.green,
+        ),
+      );
+    } else if (canLinkThisPlayer) {
+      trailing = TextButton(
+        style: TextButton.styleFrom(
+          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+          minimumSize: const Size(0, 26),
+          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+          textStyle: const TextStyle(fontSize: 11, fontWeight: FontWeight.w700),
+        ),
+        onPressed: _linkingPlayerId == playerId
+            ? null
+            : () => _linkMeToPlayer(
+                playerId: playerId,
+                playerName: name.isEmpty ? 'Игрок' : name,
+              ),
+        child: Text(_linkingPlayerId == playerId ? '...' : 'Мой'),
+      );
+    } else if (linkedProfileId != null && linkedProfileId != _myProfileId) {
+      trailing = const Icon(Icons.lock_outline, size: 16, color: Colors.grey);
+    }
 
-    return Card(
-      margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
-      elevation: 0,
-      shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(10),
-        side: BorderSide(color: Colors.grey.withValues(alpha: 0.22)),
+    return Container(
+      margin: const EdgeInsets.symmetric(horizontal: 10),
+      padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 4),
+      decoration: BoxDecoration(
+        border: Border(
+          bottom: BorderSide(color: Colors.grey.withValues(alpha: 0.18)),
+        ),
       ),
-      child: ListTile(
-        dense: true,
-        visualDensity: const VisualDensity(horizontal: -1, vertical: -2),
-        minLeadingWidth: 30,
-        contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 2),
-        leading: CircleAvatar(
-          radius: 14,
-          backgroundColor: const Color(0xFFE3F2FD),
-          child: Text(
-            firstLetter,
-            style: const TextStyle(
-              fontSize: 12,
-              color: Colors.blue,
-              fontWeight: FontWeight.bold,
+      child: Row(
+        children: [
+          CircleAvatar(
+            radius: 11,
+            backgroundColor: const Color(0xFFE3F2FD),
+            child: Text(
+              firstLetter,
+              style: const TextStyle(
+                fontSize: 10,
+                color: Colors.blue,
+                fontWeight: FontWeight.bold,
+              ),
             ),
           ),
-        ),
-        title: Text(
-          name.isEmpty ? 'Игрок' : name,
-          maxLines: 1,
-          overflow: TextOverflow.ellipsis,
-          style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 15),
-        ),
-        subtitle: Text(
-          accountStatusText,
-          maxLines: 1,
-          overflow: TextOverflow.ellipsis,
-          style: const TextStyle(fontSize: 11, color: Colors.grey),
-        ),
-        trailing: isMyPlayer
-            ? const Icon(Icons.check_circle, size: 18, color: Colors.green)
-            : canLinkThisPlayer
-            ? OutlinedButton(
-                style: OutlinedButton.styleFrom(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 10,
-                    vertical: 4,
-                  ),
-                  minimumSize: const Size(0, 30),
-                  textStyle: const TextStyle(
-                    fontSize: 12,
-                    fontWeight: FontWeight.w600,
-                  ),
-                ),
-                onPressed: _linkingPlayerId == playerId
-                    ? null
-                    : () => _linkMeToPlayer(
-                        playerId: playerId,
-                        playerName: name.isEmpty ? 'Игрок' : name,
-                      ),
-                child: Text(_linkingPlayerId == playerId ? '...' : 'Мой'),
-              )
-            : linkedProfileId != null && linkedProfileId != _myProfileId
-            ? const Icon(Icons.lock_outline, size: 18, color: Colors.grey)
-            : null,
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              name.isEmpty ? 'Игрок' : name,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600),
+            ),
+          ),
+          const SizedBox(width: 6),
+          Tooltip(
+            message: linkedProfileId == null
+                ? 'Аккаунт не привязан'
+                : (linkedProfileLabel == null ||
+                          linkedProfileLabel.trim().isEmpty
+                      ? 'Аккаунт привязан'
+                      : 'Аккаунт: $linkedProfileLabel'),
+            child: statusIcon,
+          ),
+          const SizedBox(width: 6),
+          trailing,
+        ],
       ),
     );
   }

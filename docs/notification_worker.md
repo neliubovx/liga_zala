@@ -1,6 +1,11 @@
 # Notification Worker (Edge Function)
 
-## 1) Apply SQL migrations
+## Что это и зачем
+- `notification-worker` это Edge Function, которая забирает задания из `notification_queue`, отправляет уведомления и помечает результат.
+- Ручной `curl` нужен только для проверки.
+- Для боевого режима включается расписание (`pg_cron`) и воркер запускается сам каждые 2 минуты.
+
+## 1) Apply base SQL migrations
 Run in Supabase SQL Editor, in this order:
 
 1. `/Users/neliubove/dev/liga_zala/docs/sql/2026-02-16-notification-settings.sql`
@@ -27,7 +32,51 @@ Notes:
 - `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` are provided by Supabase runtime.
 - If RESEND secrets are not set, email jobs will fail with explicit error.
 
-## 4) Invoke manually
+## 4) Save values in Vault (for cron job)
+Run in Supabase SQL Editor:
+
+```sql
+select vault.create_secret('https://<PROJECT_REF>.supabase.co', 'project_url', 'Supabase project URL');
+select vault.create_secret('<WORKER_SECRET>', 'worker_secret', 'Edge worker secret');
+```
+
+If the secret already exists, skip this step.
+
+## 5) Enable auto-run (no manual curl)
+Run:
+
+1. `/Users/neliubove/dev/liga_zala/docs/sql/2026-02-16-notification-worker-cron.sql`
+
+It creates cron job `notification-worker-every-2-min` and calls edge function every 2 minutes.
+
+## 6) Verify cron + queue
+Check cron job exists:
+
+```sql
+select jobid, jobname, schedule, active
+from cron.job
+where jobname = 'notification-worker-every-2-min';
+```
+
+Check last HTTP calls from cron:
+
+```sql
+select id, status_code, error_msg, created
+from net._http_response
+order by created desc
+limit 20;
+```
+
+Check queue states:
+
+```sql
+select channel, kind, status, count(*) as cnt
+from public.notification_queue
+group by 1,2,3
+order by 1,2,3;
+```
+
+## 7) Optional manual invoke (debug only)
 
 ```bash
 curl -X POST "https://<PROJECT_REF>.functions.supabase.co/notification-worker" \
@@ -45,23 +94,7 @@ curl -X POST "https://<PROJECT_REF>.functions.supabase.co/notification-worker" \
   -d '{"channels":["push","email"],"limit":20,"dry_run":true}'
 ```
 
-## 5) Check queue state
-
-```sql
-select channel, kind, status, count(*) as cnt
-from public.notification_queue
-group by 1,2,3
-order by 1,2,3;
-```
-
-```sql
-select created_at, channel, kind, title, status, attempts, last_error
-from public.notification_queue
-order by created_at desc
-limit 100;
-```
-
-## 6) Push token registration (from app/backend)
+## 8) Push token registration (from app/backend)
 When you have Expo push token in app, call:
 
 ```sql

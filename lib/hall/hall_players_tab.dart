@@ -140,7 +140,7 @@ class _HallPlayersTabState extends State<HallPlayersTab> {
     final directRows = await _withTimeout(
       supabase
           .from('players')
-          .select('id, name, user_id, hall_id')
+          .select('id, name, hall_id')
           .eq('hall_id', widget.hallId),
     );
 
@@ -159,7 +159,7 @@ class _HallPlayersTabState extends State<HallPlayersTab> {
       final legacyRows = await _withTimeout(
         supabase
             .from('players')
-            .select('id, name, user_id, hall_id')
+            .select('id, name, hall_id')
             .inFilter('id', missingIds),
       );
 
@@ -388,11 +388,6 @@ class _HallPlayersTabState extends State<HallPlayersTab> {
                   : 'Аккаунт: ${linkedProfileLabel ?? linkedProfileId}',
               style: const TextStyle(fontSize: 12, color: Colors.grey),
             ),
-            if ((player['user_id'] ?? '').toString().isNotEmpty)
-              const Text(
-                'Есть user_id',
-                style: TextStyle(fontSize: 12, color: Colors.grey),
-              ),
           ],
         ),
         trailing: isMyPlayer

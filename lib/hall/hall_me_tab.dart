@@ -15,10 +15,10 @@ class HallMeTab extends StatefulWidget {
 
 class _HallMeTabState extends State<HallMeTab> {
   final supabase = Supabase.instance.client;
+  final _settingsService = _NotificationSettingsService();
 
   String _accountEmail = '';
-  bool _pushEnabled = true;
-  bool _emailEnabled = true;
+  _NotificationSettings _settings = _NotificationSettings.defaults();
   bool _loading = true;
 
   @override
@@ -31,14 +31,19 @@ class _HallMeTabState extends State<HallMeTab> {
     setState(() => _loading = true);
 
     final user = supabase.auth.currentUser;
-    final prefs = await SharedPreferences.getInstance();
+    final local = await _settingsService.readLocal();
 
     if (!mounted) return;
     setState(() {
       _accountEmail = (user?.email ?? '').trim();
-      _pushEnabled = prefs.getBool(_MePrefs.pushEnabledKey) ?? true;
-      _emailEnabled = prefs.getBool(_MePrefs.emailEnabledKey) ?? true;
+      _settings = local;
       _loading = false;
+    });
+
+    final merged = await _settingsService.loadMerged();
+    if (!mounted) return;
+    setState(() {
+      _settings = merged;
     });
   }
 
@@ -111,7 +116,9 @@ class _HallMeTabState extends State<HallMeTab> {
   Future<void> _openPushSettings() async {
     await Navigator.push(
       context,
-      MaterialPageRoute(builder: (_) => const _PushSettingsPage()),
+      MaterialPageRoute(
+        builder: (_) => _PushSettingsPage(settingsService: _settingsService),
+      ),
     );
     await _load();
   }
@@ -119,7 +126,9 @@ class _HallMeTabState extends State<HallMeTab> {
   Future<void> _openEmailSettings() async {
     await Navigator.push(
       context,
-      MaterialPageRoute(builder: (_) => const _EmailSettingsPage()),
+      MaterialPageRoute(
+        builder: (_) => _EmailSettingsPage(settingsService: _settingsService),
+      ),
     );
     await _load();
   }
@@ -197,7 +206,7 @@ class _HallMeTabState extends State<HallMeTab> {
               mainAxisSize: MainAxisSize.min,
               children: [
                 Text(
-                  _pushEnabled ? 'Вкл' : 'Выкл',
+                  _settings.pushEnabled ? 'Вкл' : 'Выкл',
                   style: const TextStyle(color: Colors.grey),
                 ),
                 const SizedBox(width: 4),
@@ -213,7 +222,7 @@ class _HallMeTabState extends State<HallMeTab> {
               mainAxisSize: MainAxisSize.min,
               children: [
                 Text(
-                  _emailEnabled ? 'Вкл' : 'Выкл',
+                  _settings.emailEnabled ? 'Вкл' : 'Выкл',
                   style: const TextStyle(color: Colors.grey),
                 ),
                 const SizedBox(width: 4),
@@ -528,17 +537,191 @@ class _AppearancePage extends StatelessWidget {
   }
 }
 
+class _NotificationSettings {
+  const _NotificationSettings({
+    required this.pushEnabled,
+    required this.pushTournament,
+    required this.pushMvp,
+    required this.emailEnabled,
+    required this.emailDigest,
+    required this.emailImportant,
+  });
+
+  final bool pushEnabled;
+  final bool pushTournament;
+  final bool pushMvp;
+  final bool emailEnabled;
+  final bool emailDigest;
+  final bool emailImportant;
+
+  factory _NotificationSettings.defaults() {
+    return const _NotificationSettings(
+      pushEnabled: true,
+      pushTournament: true,
+      pushMvp: true,
+      emailEnabled: true,
+      emailDigest: true,
+      emailImportant: true,
+    );
+  }
+
+  factory _NotificationSettings.fromMap(Map<String, dynamic> map) {
+    bool b(String key, bool fallback) {
+      final value = map[key];
+      if (value is bool) return value;
+      return fallback;
+    }
+
+    return _NotificationSettings(
+      pushEnabled: b('push_enabled', true),
+      pushTournament: b('push_tournament', true),
+      pushMvp: b('push_mvp', true),
+      emailEnabled: b('email_enabled', true),
+      emailDigest: b('email_digest', true),
+      emailImportant: b('email_important', true),
+    );
+  }
+
+  Map<String, dynamic> toRpcParams() {
+    return {
+      'p_push_enabled': pushEnabled,
+      'p_push_tournament': pushTournament,
+      'p_push_mvp': pushMvp,
+      'p_email_enabled': emailEnabled,
+      'p_email_digest': emailDigest,
+      'p_email_important': emailImportant,
+    };
+  }
+
+  _NotificationSettings copyWith({
+    bool? pushEnabled,
+    bool? pushTournament,
+    bool? pushMvp,
+    bool? emailEnabled,
+    bool? emailDigest,
+    bool? emailImportant,
+  }) {
+    return _NotificationSettings(
+      pushEnabled: pushEnabled ?? this.pushEnabled,
+      pushTournament: pushTournament ?? this.pushTournament,
+      pushMvp: pushMvp ?? this.pushMvp,
+      emailEnabled: emailEnabled ?? this.emailEnabled,
+      emailDigest: emailDigest ?? this.emailDigest,
+      emailImportant: emailImportant ?? this.emailImportant,
+    );
+  }
+}
+
+class _NotificationSettingsService {
+  _NotificationSettingsService();
+
+  final supabase = Supabase.instance.client;
+  static const Duration _requestTimeout = Duration(seconds: 12);
+
+  Future<T> _withTimeout<T>(Future<T> future) {
+    return future.timeout(_requestTimeout);
+  }
+
+  bool isNetworkError(Object error) {
+    final text = error.toString().toLowerCase();
+    return text.contains('socketexception') ||
+        text.contains('timed out') ||
+        text.contains('failed host lookup') ||
+        text.contains('network is unreachable') ||
+        text.contains('timeout');
+  }
+
+  bool _isSchemaMissing(Object error) {
+    final text = error.toString().toLowerCase();
+    final mentionsSchema =
+        text.contains('profile_notification_settings') ||
+        text.contains('get_my_notification_settings') ||
+        text.contains('upsert_my_notification_settings');
+    return mentionsSchema &&
+        (text.contains('does not exist') ||
+            text.contains('could not find') ||
+            text.contains('function') ||
+            text.contains('relation') ||
+            text.contains('column'));
+  }
+
+  Future<_NotificationSettings> readLocal() async {
+    final prefs = await SharedPreferences.getInstance();
+    return _NotificationSettings(
+      pushEnabled: prefs.getBool(_MePrefs.pushEnabledKey) ?? true,
+      pushTournament: prefs.getBool(_MePrefs.pushTournamentKey) ?? true,
+      pushMvp: prefs.getBool(_MePrefs.pushMvpKey) ?? true,
+      emailEnabled: prefs.getBool(_MePrefs.emailEnabledKey) ?? true,
+      emailDigest: prefs.getBool(_MePrefs.emailDigestKey) ?? true,
+      emailImportant: prefs.getBool(_MePrefs.emailImportantKey) ?? true,
+    );
+  }
+
+  Future<void> writeLocal(_NotificationSettings settings) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_MePrefs.pushEnabledKey, settings.pushEnabled);
+    await prefs.setBool(_MePrefs.pushTournamentKey, settings.pushTournament);
+    await prefs.setBool(_MePrefs.pushMvpKey, settings.pushMvp);
+    await prefs.setBool(_MePrefs.emailEnabledKey, settings.emailEnabled);
+    await prefs.setBool(_MePrefs.emailDigestKey, settings.emailDigest);
+    await prefs.setBool(_MePrefs.emailImportantKey, settings.emailImportant);
+  }
+
+  Future<_NotificationSettings> _readRemote() async {
+    final raw = await _withTimeout(
+      supabase.rpc('get_my_notification_settings'),
+    );
+    if (raw is Map<String, dynamic>) {
+      return _NotificationSettings.fromMap(raw);
+    }
+    if (raw is Map) {
+      return _NotificationSettings.fromMap(Map<String, dynamic>.from(raw));
+    }
+    return _NotificationSettings.defaults();
+  }
+
+  Future<_NotificationSettings> loadMerged() async {
+    final local = await readLocal();
+    try {
+      final remote = await _readRemote();
+      await writeLocal(remote);
+      return remote;
+    } catch (e) {
+      if (_isSchemaMissing(e) || isNetworkError(e)) {
+        return local;
+      }
+      return local;
+    }
+  }
+
+  Future<void> save(_NotificationSettings settings) async {
+    await writeLocal(settings);
+    try {
+      await _withTimeout(
+        supabase.rpc(
+          'upsert_my_notification_settings',
+          params: settings.toRpcParams(),
+        ),
+      );
+    } catch (e) {
+      if (_isSchemaMissing(e)) return;
+      rethrow;
+    }
+  }
+}
+
 class _PushSettingsPage extends StatefulWidget {
-  const _PushSettingsPage();
+  const _PushSettingsPage({required this.settingsService});
+
+  final _NotificationSettingsService settingsService;
 
   @override
   State<_PushSettingsPage> createState() => _PushSettingsPageState();
 }
 
 class _PushSettingsPageState extends State<_PushSettingsPage> {
-  bool _enabled = true;
-  bool _tournament = true;
-  bool _mvp = true;
+  _NotificationSettings _settings = _NotificationSettings.defaults();
+  bool _loading = true;
 
   @override
   void initState() {
@@ -547,52 +730,56 @@ class _PushSettingsPageState extends State<_PushSettingsPage> {
   }
 
   Future<void> _load() async {
-    final prefs = await SharedPreferences.getInstance();
+    final merged = await widget.settingsService.loadMerged();
     if (!mounted) return;
     setState(() {
-      _enabled = prefs.getBool(_MePrefs.pushEnabledKey) ?? true;
-      _tournament = prefs.getBool(_MePrefs.pushTournamentKey) ?? true;
-      _mvp = prefs.getBool(_MePrefs.pushMvpKey) ?? true;
+      _settings = merged;
+      _loading = false;
     });
   }
 
-  Future<void> _setBool(String key, bool value) async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setBool(key, value);
+  Future<void> _save(_NotificationSettings next) async {
+    setState(() => _settings = next);
+    try {
+      await widget.settingsService.save(next);
+    } catch (e) {
+      if (!mounted) return;
+      final message = widget.settingsService.isNetworkError(e)
+          ? 'Сохранили локально. Сервер сейчас недоступен.'
+          : 'Не удалось сохранить настройки: $e';
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(message)));
+    }
   }
 
   @override
   Widget build(BuildContext context) {
+    if (_loading) {
+      return const Scaffold(body: Center(child: CircularProgressIndicator()));
+    }
+
     return Scaffold(
       appBar: AppBar(title: const Text('Push-уведомления')),
       body: ListView(
         children: [
           SwitchListTile(
             title: const Text('Включить Push-уведомления'),
-            value: _enabled,
-            onChanged: (v) async {
-              setState(() => _enabled = v);
-              await _setBool(_MePrefs.pushEnabledKey, v);
-            },
+            value: _settings.pushEnabled,
+            onChanged: (v) => _save(_settings.copyWith(pushEnabled: v)),
           ),
           SwitchListTile(
             title: const Text('Напоминания о турнирах'),
-            value: _tournament,
-            onChanged: _enabled
-                ? (v) async {
-                    setState(() => _tournament = v);
-                    await _setBool(_MePrefs.pushTournamentKey, v);
-                  }
+            value: _settings.pushTournament,
+            onChanged: _settings.pushEnabled
+                ? (v) => _save(_settings.copyWith(pushTournament: v))
                 : null,
           ),
           SwitchListTile(
             title: const Text('Голосование MVP'),
-            value: _mvp,
-            onChanged: _enabled
-                ? (v) async {
-                    setState(() => _mvp = v);
-                    await _setBool(_MePrefs.pushMvpKey, v);
-                  }
+            value: _settings.pushMvp,
+            onChanged: _settings.pushEnabled
+                ? (v) => _save(_settings.copyWith(pushMvp: v))
                 : null,
           ),
         ],
@@ -602,16 +789,17 @@ class _PushSettingsPageState extends State<_PushSettingsPage> {
 }
 
 class _EmailSettingsPage extends StatefulWidget {
-  const _EmailSettingsPage();
+  const _EmailSettingsPage({required this.settingsService});
+
+  final _NotificationSettingsService settingsService;
 
   @override
   State<_EmailSettingsPage> createState() => _EmailSettingsPageState();
 }
 
 class _EmailSettingsPageState extends State<_EmailSettingsPage> {
-  bool _enabled = true;
-  bool _digest = true;
-  bool _important = true;
+  _NotificationSettings _settings = _NotificationSettings.defaults();
+  bool _loading = true;
 
   @override
   void initState() {
@@ -620,52 +808,56 @@ class _EmailSettingsPageState extends State<_EmailSettingsPage> {
   }
 
   Future<void> _load() async {
-    final prefs = await SharedPreferences.getInstance();
+    final merged = await widget.settingsService.loadMerged();
     if (!mounted) return;
     setState(() {
-      _enabled = prefs.getBool(_MePrefs.emailEnabledKey) ?? true;
-      _digest = prefs.getBool(_MePrefs.emailDigestKey) ?? true;
-      _important = prefs.getBool(_MePrefs.emailImportantKey) ?? true;
+      _settings = merged;
+      _loading = false;
     });
   }
 
-  Future<void> _setBool(String key, bool value) async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setBool(key, value);
+  Future<void> _save(_NotificationSettings next) async {
+    setState(() => _settings = next);
+    try {
+      await widget.settingsService.save(next);
+    } catch (e) {
+      if (!mounted) return;
+      final message = widget.settingsService.isNetworkError(e)
+          ? 'Сохранили локально. Сервер сейчас недоступен.'
+          : 'Не удалось сохранить настройки: $e';
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(message)));
+    }
   }
 
   @override
   Widget build(BuildContext context) {
+    if (_loading) {
+      return const Scaffold(body: Center(child: CircularProgressIndicator()));
+    }
+
     return Scaffold(
       appBar: AppBar(title: const Text('Уведомления по эл. почте')),
       body: ListView(
         children: [
           SwitchListTile(
             title: const Text('Включить e-mail уведомления'),
-            value: _enabled,
-            onChanged: (v) async {
-              setState(() => _enabled = v);
-              await _setBool(_MePrefs.emailEnabledKey, v);
-            },
+            value: _settings.emailEnabled,
+            onChanged: (v) => _save(_settings.copyWith(emailEnabled: v)),
           ),
           SwitchListTile(
             title: const Text('Сводка за день'),
-            value: _digest,
-            onChanged: _enabled
-                ? (v) async {
-                    setState(() => _digest = v);
-                    await _setBool(_MePrefs.emailDigestKey, v);
-                  }
+            value: _settings.emailDigest,
+            onChanged: _settings.emailEnabled
+                ? (v) => _save(_settings.copyWith(emailDigest: v))
                 : null,
           ),
           SwitchListTile(
             title: const Text('Важные события (MVP, турниры)'),
-            value: _important,
-            onChanged: _enabled
-                ? (v) async {
-                    setState(() => _important = v);
-                    await _setBool(_MePrefs.emailImportantKey, v);
-                  }
+            value: _settings.emailImportant,
+            onChanged: _settings.emailEnabled
+                ? (v) => _save(_settings.copyWith(emailImportant: v))
                 : null,
           ),
         ],

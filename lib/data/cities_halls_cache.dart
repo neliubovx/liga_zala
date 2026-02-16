@@ -31,6 +31,8 @@ class CitiesHallsCache {
 
   final Map<String, List<Map<String, dynamic>>> _hallsMemory = {};
   final Map<String, DateTime?> _hallsMemoryTs = {};
+  final Map<String, List<Map<String, dynamic>>> _historyMemory = {};
+  final Map<String, DateTime?> _historyMemoryTs = {};
 
   Future<CachedListSnapshot> readCities() async {
     if (_citiesMemory != null) {
@@ -96,11 +98,47 @@ class CitiesHallsCache {
     await prefs.setInt(_hallsTsKey(cityId), now.millisecondsSinceEpoch);
   }
 
+  Future<CachedListSnapshot> readTournamentHistory(String hallId) async {
+    final memoryRows = _historyMemory[hallId];
+    if (memoryRows != null) {
+      return CachedListSnapshot(
+        items: _cloneRows(memoryRows),
+        storedAt: _historyMemoryTs[hallId],
+      );
+    }
+
+    final prefs = await SharedPreferences.getInstance();
+    final rows = _decodeRows(prefs.getString(_historyDataKey(hallId)));
+    final ts = _decodeTs(prefs.getInt(_historyTsKey(hallId)));
+
+    _historyMemory[hallId] = rows;
+    _historyMemoryTs[hallId] = ts;
+
+    return CachedListSnapshot(items: _cloneRows(rows), storedAt: ts);
+  }
+
+  Future<void> writeTournamentHistory(
+    String hallId,
+    List<Map<String, dynamic>> rows,
+  ) async {
+    final normalized = _cloneRows(rows);
+    final now = DateTime.now();
+
+    _historyMemory[hallId] = normalized;
+    _historyMemoryTs[hallId] = now;
+
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_historyDataKey(hallId), jsonEncode(normalized));
+    await prefs.setInt(_historyTsKey(hallId), now.millisecondsSinceEpoch);
+  }
+
   Future<void> clearAll() async {
     _citiesMemory = null;
     _citiesMemoryTs = null;
     _hallsMemory.clear();
     _hallsMemoryTs.clear();
+    _historyMemory.clear();
+    _historyMemoryTs.clear();
 
     final prefs = await SharedPreferences.getInstance();
     await prefs.remove(_citiesDataKey);
@@ -108,7 +146,11 @@ class CitiesHallsCache {
 
     final hallKeys = prefs
         .getKeys()
-        .where((k) => k.startsWith('cache_v1_halls_'))
+        .where(
+          (k) =>
+              k.startsWith('cache_v1_halls_') ||
+              k.startsWith('cache_v1_tournament_history_'),
+        )
         .toList(growable: false);
 
     for (final key in hallKeys) {
@@ -118,6 +160,10 @@ class CitiesHallsCache {
 
   static String _hallsDataKey(String cityId) => 'cache_v1_halls_${cityId}_data';
   static String _hallsTsKey(String cityId) => 'cache_v1_halls_${cityId}_ts';
+  static String _historyDataKey(String hallId) =>
+      'cache_v1_tournament_history_${hallId}_data';
+  static String _historyTsKey(String hallId) =>
+      'cache_v1_tournament_history_${hallId}_ts';
 
   static List<Map<String, dynamic>> _cloneRows(
     List<Map<String, dynamic>> rows,

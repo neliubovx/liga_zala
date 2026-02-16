@@ -7,6 +7,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:liga_zala/city/city_list_page.dart';
 import 'package:liga_zala/data/cities_halls_cache.dart';
+import 'package:liga_zala/features/tournaments/ui/tournaments_history_page.dart';
 import 'package:liga_zala/hall/hall_list_page.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
@@ -168,6 +169,125 @@ void main() {
     expect(find.text('Обновить'), findsOneWidget);
     expect(httpClient.callCount('GET', '/rest/v1/halls'), 3);
   });
+
+  testWidgets('TournamentsHistoryPage handles network failure and retry', (
+    WidgetTester tester,
+  ) async {
+    httpClient.setPlan('GET', '/rest/v1/tournaments', [
+      _ResponseStep.error(const SocketException('Failed host lookup')),
+      _ResponseStep.error(const SocketException('Failed host lookup')),
+      _ResponseStep.error(const SocketException('Failed host lookup')),
+      _ResponseStep.json([
+        {
+          'id': 't-1',
+          'date': '2026-03-01T10:00:00Z',
+          'teams_count': 4,
+          'rounds': 3,
+          'completed': true,
+        },
+      ], delay: const Duration(milliseconds: 120)),
+    ]);
+    httpClient.setPlan('GET', '/rest/v1/matches', [
+      _ResponseStep.json([
+        {
+          'tournament_id': 't-1',
+          'home_team': 0,
+          'away_team': 1,
+          'home_score': 2,
+          'away_score': 1,
+          'finished': true,
+        },
+      ]),
+    ]);
+
+    await tester.pumpWidget(
+      const MaterialApp(home: TournamentsHistoryPage(hallId: 'hall-1')),
+    );
+
+    expect(find.byType(CircularProgressIndicator), findsOneWidget);
+    await tester.pump(const Duration(seconds: 2));
+
+    expect(
+      find.textContaining('Не удалось загрузить историю турниров'),
+      findsOneWidget,
+    );
+    expect(find.text('Повторить'), findsOneWidget);
+
+    await tester.tap(find.text('Повторить'));
+    await tester.pump();
+    await tester.pump(const Duration(seconds: 1));
+
+    expect(httpClient.callCount('GET', '/rest/v1/tournaments'), 4);
+    expect(httpClient.callCount('GET', '/rest/v1/matches'), 1);
+    expect(find.textContaining('01.03.2026'), findsOneWidget);
+    expect(
+      find.textContaining('Победитель: Команда A (3 оч.)'),
+      findsOneWidget,
+    );
+  });
+
+  testWidgets(
+    'TournamentsHistoryPage keeps cached data and shows offline banner',
+    (WidgetTester tester) async {
+      await CitiesHallsCache.instance.writeTournamentHistory('hall-1', [
+        {
+          'id': 't-1',
+          'date': '2026-03-01T10:00:00Z',
+          'teams_count': 4,
+          'rounds': 3,
+          'completed': true,
+          '_played': 1,
+          '_total': 1,
+          '_leader_name': 'Команда A',
+          '_leader_code': 'A',
+          '_leader_pts': 3,
+          '_top3': [
+            {
+              'rank': 1,
+              'team_name': 'Команда A',
+              'team_code': 'A',
+              'points': 3,
+            },
+            {
+              'rank': 2,
+              'team_name': 'Команда B',
+              'team_code': 'B',
+              'points': 0,
+            },
+            {
+              'rank': 3,
+              'team_name': 'Команда C',
+              'team_code': 'C',
+              'points': 0,
+            },
+          ],
+        },
+      ]);
+
+      httpClient.setPlan('GET', '/rest/v1/tournaments', [
+        _ResponseStep.error(const SocketException('Failed host lookup')),
+        _ResponseStep.error(const SocketException('Failed host lookup')),
+        _ResponseStep.error(const SocketException('Failed host lookup')),
+      ]);
+
+      await tester.pumpWidget(
+        const MaterialApp(home: TournamentsHistoryPage(hallId: 'hall-1')),
+      );
+      await tester.pump(const Duration(milliseconds: 120));
+
+      expect(find.textContaining('01.03.2026'), findsOneWidget);
+
+      await tester.pump(const Duration(seconds: 2));
+
+      expect(
+        find.text('Нет сети. Показаны сохраненные данные.'),
+        findsOneWidget,
+      );
+      expect(find.text('Обновить'), findsOneWidget);
+      expect(httpClient.callCount('GET', '/rest/v1/tournaments'), 3);
+      expect(httpClient.callCount('GET', '/rest/v1/matches'), 0);
+    },
+  );
 }
 
 class _PlannedHttpClient extends http.BaseClient {

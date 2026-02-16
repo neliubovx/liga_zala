@@ -4,6 +4,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 
 import 'package:liga_zala/app/theme_controller.dart';
 import 'package:liga_zala/auth/auth_page.dart';
+import 'package:liga_zala/notifications/push_token_service.dart';
 
 class HallMeTab extends StatefulWidget {
   const HallMeTab({super.key, required this.hallId});
@@ -125,6 +126,7 @@ class _HallMeTabState extends State<HallMeTab> {
     if (ok != true) return;
 
     try {
+      await PushTokenService.instance.deactivateCurrentToken();
       await supabase.auth.signOut();
       if (!mounted) return;
       Navigator.pushAndRemoveUntil(

@@ -56,8 +56,7 @@ end
 $$;
 
 create unique index if not exists notification_queue_unique_profile_tournament_kind_channel
-  on public.notification_queue (profile_id, tournament_id, kind, channel)
-  where tournament_id is not null;
+  on public.notification_queue (profile_id, tournament_id, kind, channel);
 
 create index if not exists notification_queue_status_scheduled_idx
   on public.notification_queue (status, scheduled_at, created_at);

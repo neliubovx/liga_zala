@@ -357,17 +357,31 @@ class _HallPlayersTabState extends State<HallPlayersTab> {
         (linkedProfileId == null || linkedProfileId == _myProfileId) &&
         !isMyPlayer;
 
+    final accountStatusText = linkedProfileId == null
+        ? 'Без привязанного аккаунта'
+        : (linkedProfileLabel == null || linkedProfileLabel.trim().isEmpty
+              ? 'Аккаунт привязан'
+              : 'Аккаунт: $linkedProfileLabel');
+
     return Card(
-      margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-      elevation: 2,
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+      margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+      elevation: 0,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(10),
+        side: BorderSide(color: Colors.grey.withValues(alpha: 0.22)),
+      ),
       child: ListTile(
-        contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+        dense: true,
+        visualDensity: const VisualDensity(horizontal: -1, vertical: -2),
+        minLeadingWidth: 30,
+        contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 2),
         leading: CircleAvatar(
+          radius: 14,
           backgroundColor: const Color(0xFFE3F2FD),
           child: Text(
             firstLetter,
             style: const TextStyle(
+              fontSize: 12,
               color: Colors.blue,
               fontWeight: FontWeight.bold,
             ),
@@ -375,44 +389,41 @@ class _HallPlayersTabState extends State<HallPlayersTab> {
         ),
         title: Text(
           name.isEmpty ? 'Игрок' : name,
-          style: const TextStyle(fontWeight: FontWeight.w600),
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 15),
         ),
-        subtitle: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const SizedBox(height: 4),
-            Text(
-              linkedProfileId == null
-                  ? 'Без привязанного аккаунта'
-                  : 'Аккаунт: ${linkedProfileLabel ?? linkedProfileId}',
-              style: const TextStyle(fontSize: 12, color: Colors.grey),
-            ),
-          ],
+        subtitle: Text(
+          accountStatusText,
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          style: const TextStyle(fontSize: 11, color: Colors.grey),
         ),
         trailing: isMyPlayer
-            ? const Text(
-                'Это я',
-                style: TextStyle(
-                  fontSize: 12,
-                  fontWeight: FontWeight.bold,
-                  color: Colors.green,
-                ),
-              )
+            ? const Icon(Icons.check_circle, size: 18, color: Colors.green)
             : canLinkThisPlayer
             ? OutlinedButton(
+                style: OutlinedButton.styleFrom(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 10,
+                    vertical: 4,
+                  ),
+                  minimumSize: const Size(0, 30),
+                  textStyle: const TextStyle(
+                    fontSize: 12,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
                 onPressed: _linkingPlayerId == playerId
                     ? null
                     : () => _linkMeToPlayer(
                         playerId: playerId,
                         playerName: name.isEmpty ? 'Игрок' : name,
                       ),
-                child: Text(
-                  _linkingPlayerId == playerId ? '...' : 'Это мой аккаунт',
-                ),
+                child: Text(_linkingPlayerId == playerId ? '...' : 'Мой'),
               )
             : linkedProfileId != null && linkedProfileId != _myProfileId
-            ? const Icon(Icons.lock_outline, color: Colors.grey)
+            ? const Icon(Icons.lock_outline, size: 18, color: Colors.grey)
             : null,
       ),
     );

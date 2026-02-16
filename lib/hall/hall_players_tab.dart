@@ -3,13 +3,15 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 
 class HallPlayersTab extends StatefulWidget {
   final String hallId;
-  final bool isOwner;
 
   const HallPlayersTab({
     super.key,
     required this.hallId,
-    required this.isOwner,
+    required this.canManageHall,
   });
+
+  // Reserved for upcoming owner/admin UI actions in Players tab.
+  final bool canManageHall;
 
   @override
   State<HallPlayersTab> createState() => _HallPlayersTabState();
@@ -117,6 +119,27 @@ class _HallPlayersTabState extends State<HallPlayersTab> {
     if (_myProfileId == null) return;
 
     try {
+      final data = await _withTimeout(
+        supabase.rpc(
+          'get_my_hall_membership',
+          params: {'p_hall_id': widget.hallId},
+        ),
+      );
+      final row = _firstRow(data);
+      if (row != null) {
+        _isApprovedMember =
+            (row['status'] ?? '').toString().toLowerCase() == 'approved';
+        return;
+      }
+    } catch (e) {
+      if (!_isMissingMembershipRpc(e)) {
+        _isApprovedMember = false;
+        return;
+      }
+    }
+
+    // Fallback for old DB schema before RPC migration is applied.
+    try {
       final row = await _withTimeout(
         supabase
             .from('hall_members')
@@ -125,13 +148,29 @@ class _HallPlayersTabState extends State<HallPlayersTab> {
             .eq('profile_id', _myProfileId!)
             .maybeSingle(),
       );
-
       _isApprovedMember =
           (row?['status'] ?? '').toString().toLowerCase() == 'approved';
     } catch (_) {
-      // Membership only controls link button state; it must not block players list.
       _isApprovedMember = false;
     }
+  }
+
+  Map<String, dynamic>? _firstRow(dynamic value) {
+    if (value is List && value.isNotEmpty && value.first is Map) {
+      return Map<String, dynamic>.from(value.first as Map);
+    }
+    if (value is Map) {
+      return Map<String, dynamic>.from(value);
+    }
+    return null;
+  }
+
+  bool _isMissingMembershipRpc(Object error) {
+    final text = error.toString().toLowerCase();
+    return text.contains('get_my_hall_membership') &&
+        (text.contains('function') ||
+            text.contains('does not exist') ||
+            text.contains('could not find'));
   }
 
   Future<List<Map<String, dynamic>>> _fetchHallPlayers() async {

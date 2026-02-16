@@ -108,6 +108,32 @@ class _TournamentMvpVotePageState extends State<TournamentMvpVotePage> {
     }
 
     try {
+      final data = await supabase.rpc(
+        'get_my_hall_membership',
+        params: {'p_hall_id': widget.hallId},
+      );
+      final row = _firstRow(data);
+      if (row != null) {
+        final isAdmin = row['is_admin'] == true;
+        if (isAdmin) {
+          _canOpenVotingWindow = true;
+          return;
+        }
+        final role = (row['role'] ?? '').toString().toLowerCase();
+        final status = (row['status'] ?? '').toString().toLowerCase();
+        _canOpenVotingWindow =
+            status == 'approved' && (role == 'owner' || role == 'admin');
+        return;
+      }
+    } catch (e) {
+      if (!_isMissingMembershipRpc(e)) {
+        _canOpenVotingWindow = false;
+        return;
+      }
+    }
+
+    // Fallback for old schema before get_my_hall_membership() migration.
+    try {
       final row = await supabase
           .from('hall_members')
           .select('role, status')
@@ -122,6 +148,24 @@ class _TournamentMvpVotePageState extends State<TournamentMvpVotePage> {
     } catch (_) {
       _canOpenVotingWindow = false;
     }
+  }
+
+  Map<String, dynamic>? _firstRow(dynamic value) {
+    if (value is List && value.isNotEmpty && value.first is Map) {
+      return Map<String, dynamic>.from(value.first as Map);
+    }
+    if (value is Map) {
+      return Map<String, dynamic>.from(value);
+    }
+    return null;
+  }
+
+  bool _isMissingMembershipRpc(Object error) {
+    final text = error.toString().toLowerCase();
+    return text.contains('get_my_hall_membership') &&
+        (text.contains('function') ||
+            text.contains('does not exist') ||
+            text.contains('could not find'));
   }
 
   Future<Map<String, dynamic>?> _loadLatestCompletedTournament() async {

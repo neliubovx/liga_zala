@@ -259,11 +259,8 @@ class _HallListPageState extends State<HallListPage> {
                 Navigator.push(
                   context,
                   MaterialPageRoute(
-                    builder: (_) => HallHomePage(
-                      hallId: hallId,
-                      hallName: hallName,
-                      isOwner: false, // пока владельца в БД нет
-                    ),
+                    builder: (_) =>
+                        HallHomePage(hallId: hallId, hallName: hallName),
                   ),
                 );
               },

@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import 'package:liga_zala/features/home/pages/matches_page.dart';
 import 'package:liga_zala/hall/hall_admin_page.dart';
+import 'package:liga_zala/hall/hall_me_tab.dart';
 import 'package:liga_zala/hall/hall_players_tab.dart';
 import 'package:liga_zala/hall/hall_rating_tab.dart';
 
@@ -31,12 +32,10 @@ class _HallHomePageState extends State<HallHomePage> {
 
     _pages = [
       const _HomeTab(),
-      HallPlayersTab(
-        hallId: widget.hallId,
-        isOwner: widget.isOwner,
-      ),
+      HallPlayersTab(hallId: widget.hallId, isOwner: widget.isOwner),
       MatchesPage(hallId: widget.hallId),
       HallRatingTab(hallId: widget.hallId),
+      HallMeTab(hallId: widget.hallId),
     ];
   }
 
@@ -69,14 +68,8 @@ class _HallHomePageState extends State<HallHomePage> {
         onTap: (index) => setState(() => _currentIndex = index),
         type: BottomNavigationBarType.fixed,
         items: const [
-          BottomNavigationBarItem(
-            icon: Icon(Icons.home),
-            label: 'Главная',
-          ),
-          BottomNavigationBarItem(
-            icon: Icon(Icons.group),
-            label: 'Игроки',
-          ),
+          BottomNavigationBarItem(icon: Icon(Icons.home), label: 'Главная'),
+          BottomNavigationBarItem(icon: Icon(Icons.group), label: 'Игроки'),
           BottomNavigationBarItem(
             icon: Icon(Icons.sports_soccer),
             label: 'Турниры',
@@ -84,6 +77,10 @@ class _HallHomePageState extends State<HallHomePage> {
           BottomNavigationBarItem(
             icon: Icon(Icons.leaderboard),
             label: 'Рейтинг',
+          ),
+          BottomNavigationBarItem(
+            icon: Icon(Icons.person_outline),
+            label: 'Вы',
           ),
         ],
       ),

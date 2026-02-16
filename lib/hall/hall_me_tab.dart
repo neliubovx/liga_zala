@@ -3,6 +3,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import 'package:liga_zala/app/theme_controller.dart';
+import 'package:liga_zala/auth/auth_page.dart';
 
 class HallMeTab extends StatefulWidget {
   const HallMeTab({super.key, required this.hallId});
@@ -99,6 +100,43 @@ class _HallMeTabState extends State<HallMeTab> {
       ScaffoldMessenger.of(
         context,
       ).showSnackBar(SnackBar(content: Text('Не удалось обновить e-mail: $e')));
+    }
+  }
+
+  Future<void> _signOut() async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Text('Выйти из аккаунта?'),
+        content: const Text('Текущая сессия будет завершена.'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Отмена'),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Выйти'),
+          ),
+        ],
+      ),
+    );
+
+    if (ok != true) return;
+
+    try {
+      await supabase.auth.signOut();
+      if (!mounted) return;
+      Navigator.pushAndRemoveUntil(
+        context,
+        MaterialPageRoute(builder: (_) => const AuthPage()),
+        (_) => false,
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('Не удалось выйти: $e')));
     }
   }
 
@@ -247,6 +285,15 @@ class _HallMeTabState extends State<HallMeTab> {
                 MaterialPageRoute(builder: (_) => const _HelpPage()),
               );
             },
+          ),
+          const Divider(height: 20),
+          ListTile(
+            leading: const Icon(Icons.logout, color: Colors.redAccent),
+            title: const Text(
+              'Выйти из аккаунта',
+              style: TextStyle(color: Colors.redAccent),
+            ),
+            onTap: _signOut,
           ),
           const SizedBox(height: 16),
         ],

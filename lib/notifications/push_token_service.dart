@@ -19,6 +19,7 @@ class PushTokenService {
 
   StreamSubscription<AuthState>? _authSub;
   StreamSubscription<String>? _tokenRefreshSub;
+  StreamSubscription<RemoteMessage>? _messageSub;
   bool _started = false;
   bool _firebaseReady = false;
   bool _syncInFlight = false;
@@ -27,30 +28,58 @@ class PushTokenService {
     if (_started) return;
     _started = true;
 
-    _firebaseReady = await _tryInitFirebase();
-    if (!_firebaseReady) return;
+    try {
+      _firebaseReady = await _tryInitFirebase();
+      if (!_firebaseReady) return;
 
-    _authSub = supabase.auth.onAuthStateChange.listen((event) {
-      final type = event.event;
-      if (type == AuthChangeEvent.signedOut) return;
+      _authSub = supabase.auth.onAuthStateChange.listen((event) {
+        final type = event.event;
+        if (type == AuthChangeEvent.signedOut) return;
+        unawaited(syncNow());
+      });
+
+      try {
+        _tokenRefreshSub = FirebaseMessaging.instance.onTokenRefresh.listen(
+          (token) => unawaited(_upsertToken(token)),
+          onError: (error, stackTrace) {
+            debugPrint('⚠️ Push token refresh failed: $error');
+          },
+        );
+      } catch (error) {
+        debugPrint('⚠️ Push token refresh subscribe failed: $error');
+      }
+
+      // iOS: show system banners while app is in foreground.
+      try {
+        await FirebaseMessaging.instance
+            .setForegroundNotificationPresentationOptions(
+              alert: true,
+              badge: true,
+              sound: true,
+            );
+      } catch (error) {
+        debugPrint('⚠️ Push foreground presentation setup failed: $error');
+      }
+
+      _messageSub = FirebaseMessaging.onMessage.listen((message) {
+        final title = message.notification?.title ?? '';
+        final body = message.notification?.body ?? '';
+        debugPrint('🔔 Push received in foreground: "$title" "$body"');
+      });
+
       unawaited(syncNow());
-    });
-
-    _tokenRefreshSub = FirebaseMessaging.instance.onTokenRefresh.listen(
-      (token) => unawaited(_upsertToken(token)),
-      onError: (error, stackTrace) {
-        debugPrint('⚠️ Push token refresh failed: $error');
-      },
-    );
-
-    unawaited(syncNow());
+    } catch (error) {
+      debugPrint('⚠️ Push service start failed: $error');
+    }
   }
 
   Future<void> dispose() async {
     await _authSub?.cancel();
     await _tokenRefreshSub?.cancel();
+    await _messageSub?.cancel();
     _authSub = null;
     _tokenRefreshSub = null;
+    _messageSub = null;
   }
 
   Future<bool> _tryInitFirebase() async {

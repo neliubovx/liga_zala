@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'auth/auth_page.dart';
@@ -13,9 +15,12 @@ void main() async {
         'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InN2ZmlpY2VhYWRqdXpkdXN4cWVrIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzA4MDI5MDMsImV4cCI6MjA4NjM3ODkwM30.IkPmZ0nimPBoFKXEgSBd6--nWJu0EsYeS0CmBtekgRk',
   );
   await AppThemeController.instance.load();
-  await PushTokenService.instance.start();
-
   runApp(const MyApp());
+
+  // Keep app startup resilient even if push init fails on device.
+  WidgetsBinding.instance.addPostFrameCallback((_) {
+    unawaited(PushTokenService.instance.start());
+  });
 }
 
 class MyApp extends StatelessWidget {

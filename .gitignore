@@ -46,3 +46,6 @@ app.*.map.json
 
 # Supabase local temp
 supabase/.temp/
+
+# iOS build artifacts
+ios/build/

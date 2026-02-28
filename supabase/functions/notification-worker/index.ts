@@ -390,10 +390,25 @@ async function sendPushWithFcm(job: QueueJob, tokens: string[]) {
             body: job.body,
           },
           data,
-          android: { priority: "high" },
+          android: {
+            priority: "high",
+            notification: {
+              sound: "default",
+            },
+          },
           apns: {
             headers: {
               "apns-priority": "10",
+              "apns-push-type": "alert",
+            },
+            payload: {
+              aps: {
+                alert: {
+                  title: job.title,
+                  body: job.body,
+                },
+                sound: "default",
+              },
             },
           },
         },

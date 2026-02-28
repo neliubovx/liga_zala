@@ -132,3 +132,7 @@ flutter clean
 flutter pub get
 flutter run
 ```
+
+## 10) Troubleshooting guide
+- If queue shows `sent`, but push is not visible on iPhone, follow:
+  - `/Users/neliubove/dev/liga_zala/docs/push-troubleshooting.md`
